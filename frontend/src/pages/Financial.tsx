@@ -220,13 +220,18 @@ export default function Financial({ initialCode = '' }: { initialCode?: string }
   const activeMetrics = useMemo(() => {
     if (!data || !dates.length) return KEY_METRICS
     const available = Object.keys(merged[dates[0]] || {})
-    // 检查是否有中文指标
+    // 有 KEY_METRICS 中的指标 → 直接用它
     const hasChinese = available.some(k => KEY_METRICS.includes(k))
     if (hasChinese) return KEY_METRICS
-    // 港股：用英文名映射
-    return available
-      .filter(k => HK_METRIC_NAMES[k])
-      .sort((a, b) => (HK_METRIC_NAMES[a] || a).localeCompare(HK_METRIC_NAMES[b] || b))
+    // 有英文分析指标（港股年度的 OPERATE_INCOME 等）→ 用映射
+    const hasEnglish = available.some(k => HK_METRIC_NAMES[k])
+    if (hasEnglish) {
+      return available
+        .filter(k => HK_METRIC_NAMES[k])
+        .sort((a, b) => (HK_METRIC_NAMES[a] || a).localeCompare(HK_METRIC_NAMES[b] || b))
+    }
+    // 纯中文利润表科目（港股季度的 营业额/毛利 等）→ 全部展示
+    return available.sort()
   }, [data, dates, merged])
   if (!isDark) {
     /* passes through */
