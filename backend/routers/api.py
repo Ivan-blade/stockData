@@ -18,11 +18,19 @@ def list_companies(
     keyword: str = Query("", description="按名称模糊搜索"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=200, description="每页条数"),
+    exchange: str = Query("", description="SZ/SH/HK/A"),
     db: Session = Depends(get_db),
 ):
-    q = db.query(Company)
+    from models import StockList as CompanyModel
+    q = db.query(CompanyModel)
     if keyword:
-        q = q.filter(Company.name.like(f"%{keyword}%"))
+        q = q.filter(CompanyModel.name.like(f"%{keyword}%"))
+    if exchange == "HK":
+        q = q.filter(CompanyModel.exchange == "HK")
+    elif exchange == "A":
+        q = q.filter(CompanyModel.exchange.in_(["SZ", "SH"]))
+    elif exchange:
+        q = q.filter(CompanyModel.exchange == exchange)
     total = q.count()
     items = q.offset((page - 1) * page_size).limit(page_size).all()
     return {

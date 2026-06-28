@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useThemeStore } from '../stores/themeStore'
-import { useCompanyStore } from '../stores/companyStore'
 import { api } from '../api/client'
 import type { FinancialResponse } from '../types'
 import ReactECharts from 'echarts-for-react'
@@ -36,23 +35,30 @@ function samePeriodLastYear(dateStr: string): string | null {
 
 export default function Financial() {
   const { theme } = useThemeStore()
-  const { cache, cacheLoaded, loadCache } = useCompanyStore()
   const [code, setCode] = useState('')
   const [data, setData] = useState<FinancialResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [selectedMetric, setSelectedMetric] = useState('营业总收入')
+  const [showHK, setShowHK] = useState(false)
+  const [stockList, setStockList] = useState<any[]>([])
   const isDark = theme === 'dark'
 
   useEffect(() => {
-    useCompanyStore.getState().loadCache().then(all => {
-      if (all.length > 0 && !code) {
-        const c = all[0]?.code
-        setCode(c)
-        if (c) fetchFinancial(c)
-      }
-    })
-  }, [])
+    const exchange = showHK ? 'HK' : 'A'
+    fetch(`/api/companies?exchange=${exchange}&page=1&page_size=500`)
+      .then(r => r.json())
+      .then(d => {
+        const items = d.items || []
+        setStockList(items)
+        if (items.length > 0 && !code) {
+          const c = items[0].code
+          setCode(c)
+          fetchFinancial(c)
+        }
+      })
+      .catch(() => {})
+  }, [showHK])
 
   const fetchFinancial = async (c: string) => {
     setLoading(true)
@@ -71,8 +77,8 @@ export default function Financial() {
   }
 
   const filtered = search
-    ? cache.filter(c => c.name?.includes(search) || c.code.includes(search))
-    : cache
+    ? stockList.filter(c => c.name?.includes(search) || c.code.includes(search))
+    : stockList.slice(0, 100)
 
   // 使用 summary（财务摘要已包含所有指标）
   const merged = useMemo(() => {
@@ -155,16 +161,30 @@ export default function Financial() {
     }
   }, [dates, merged, selectedMetric, isDark])
 
-  const currentCompany = cache.find(c => c.code === code)
+  const currentCompany = stockList.find(c => c.code === code)
   if (!isDark) {
     /* passes through */
   }
 
   return (
     <div>
-      {/* ── 头部：标题 + 选择器 ── */}
+      {/* ── 头部：标题 + A/HK 切换 + 选择器 ── */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h2 className="text-base font-semibold">财务数据</h2>
+        <div className="flex rounded-md border overflow-hidden" style={{ borderColor: isDark ? '#1e2235' : '#d1d5db' }}>
+          <button onClick={() => setShowHK(false)}
+            className={`px-3 py-1 text-xs font-medium transition-colors ${
+              !showHK
+                ? (isDark ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-50 text-amber-600')
+                : (isDark ? 'text-[#8892a4] hover:text-white' : 'text-gray-500 hover:text-gray-900')
+            }`}>A 股</button>
+          <button onClick={() => setShowHK(true)}
+            className={`px-3 py-1 text-xs font-medium transition-colors ${
+              showHK
+                ? (isDark ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-50 text-amber-600')
+                : (isDark ? 'text-[#8892a4] hover:text-white' : 'text-gray-500 hover:text-gray-900')
+            }`}>港 股</button>
+        </div>
         <div className="relative" style={{ width: 280 }}>
           <input
             value={search}
