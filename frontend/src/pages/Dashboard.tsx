@@ -149,19 +149,25 @@ export default function Dashboard() {
     } catch {}
   }
 
-  // 合并快照数据 + 公司名称
+  // 合并快照数据 + 公司名称 + 交易所
   const rawRows = (snap?.items || []).map(item => {
     const company = cache.find(c => c.code === item.code)
-    return { ...item, name: company?.name || '-' }
+    return { ...item, name: company?.name || '-', exchange: company?.exchange || '-' }
   }).filter(r => {
     if (!searchInput) return true
     return r.name.includes(searchInput) || r.code.includes(searchInput)
   })
 
+  const [showHK, setShowHK] = useState(false)
+  const filteredRows = showHK
+    ? rawRows.filter(r => r.exchange === 'HK')
+    : rawRows.filter(r => r.exchange !== 'HK')
+  const exchangeLabel = showHK ? '港股' : 'A股'
+
   // 排序
   const [sortKey, setSortKey] = useState<string>('')
   const [sortAsc, setSortAsc] = useState(true)
-  let snapshotRows = [...rawRows]
+  let snapshotRows = [...filteredRows]
   if (sortKey) {
     snapshotRows.sort((a, b) => {
       const av = a[sortKey] ?? 0
@@ -214,10 +220,25 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Search bar */}
+      {/* Search bar + 切换 */}
       <div className="flex items-center gap-3 mb-4">
         <h2 className="text-base font-semibold">行情快照</h2>
         <span className={`text-xs ${t('text-[#5a6275]')}`}>{snap?.date ? `更新于 ${snap.date}` : ''}</span>
+        {/* A/HK 切换 */}
+        <div className="flex rounded-md border overflow-hidden" style={{ borderColor: isDark ? '#1e2235' : '#d1d5db' }}>
+          <button onClick={() => setShowHK(false)}
+            className={`px-3 py-1 text-xs font-medium transition-colors ${
+              !showHK
+                ? (isDark ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-50 text-amber-600')
+                : (isDark ? 'text-[#8892a4] hover:text-white' : 'text-gray-500 hover:text-gray-900')
+            }`}>A 股</button>
+          <button onClick={() => setShowHK(true)}
+            className={`px-3 py-1 text-xs font-medium transition-colors ${
+              showHK
+                ? (isDark ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-50 text-amber-600')
+                : (isDark ? 'text-[#8892a4] hover:text-white' : 'text-gray-500 hover:text-gray-900')
+            }`}>港 股</button>
+        </div>
         <input
           value={searchInput}
           onChange={e => setSearchInput(e.target.value)}
