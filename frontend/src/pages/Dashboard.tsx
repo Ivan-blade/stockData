@@ -271,7 +271,7 @@ export default function Dashboard() {
                 <td className={`px-3.5 py-2 text-sm font-mono text-right ${(r.change_pct||0) > 0 ? 'text-green-500' : (r.change_pct||0) < 0 ? 'text-red-500' : ''}`}>
                   {(r.change_pct||0) > 0 ? '+' : ''}{r.change_pct?.toFixed(2)}%
                 </td>
-                <td className={`px-3.5 py-2 text-xs font-mono text-right ${t('text-[#8892a4]')}`}>{r.turnover?.toFixed(2)}%</td>
+                <td className={`px-3.5 py-2 text-xs font-mono text-right ${t('text-[#8892a4]')}`}>{r.turnover != null ? r.turnover.toFixed(2)+'%' : '—'}</td>
                 <td className={`px-3.5 py-2 text-xs font-mono text-right ${r.pe_ttm != null ? '': t('text-[#5a6275]')}`}>
                   {r.pe_ttm != null ? r.pe_ttm?.toFixed(2) : '-'}
                 </td>

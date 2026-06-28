@@ -12,7 +12,6 @@ export interface Company {
 
 export interface FinancialResponse {
   summary: Record<string, Record<string, number>>
-  indicators: Record<string, Record<string, number>>
 }
 
 export interface Stats {

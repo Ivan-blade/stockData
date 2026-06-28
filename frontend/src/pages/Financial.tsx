@@ -74,15 +74,10 @@ export default function Financial() {
     ? cache.filter(c => c.name?.includes(search) || c.code.includes(search))
     : cache
 
-  // 合并 summary + indicators
+  // 使用 summary（财务摘要已包含所有指标）
   const merged = useMemo(() => {
     if (!data) return {}
-    const allKeys = new Set([...Object.keys(data.summary), ...Object.keys(data.indicators)])
-    const result: Record<string, Record<string, number>> = {}
-    for (const d of allKeys) {
-      result[d] = { ...data.summary[d], ...data.indicators[d] }
-    }
-    return result
+    return { ...data.summary }
   }, [data])
 
   const dates = useMemo(() => Object.keys(merged).sort().reverse(), [merged])

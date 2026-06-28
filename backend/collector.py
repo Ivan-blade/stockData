@@ -101,25 +101,6 @@ def upsert_financial_summary(conn, code, records):
     return count
 
 
-def upsert_financial_indicator(conn, code, records):
-    """批量插入财务指标"""
-    now = datetime.now()
-    count = 0
-    for r in records:
-        if "error" in r:
-            continue
-        sql = text("""INSERT INTO financial_indicator
-            (code, report_date, indicator, value, updated_at)
-            VALUES (:code, :rd, :ind, :val, :now)
-            ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)
-        """)
-        result = conn.execute(sql, {
-            "code": code, "rd": r["report_date"],
-            "ind": r["indicator"], "val": r["value"],
-            "now": now,
-        })
-        if result.rowcount > 0:
-            count += 1
     return count
 
 
@@ -137,7 +118,7 @@ def collect_all(targets=None, verbose=True):
     if targets is None:
         targets = TARGET_COMPANIES
 
-    stats = {"companies": 0, "summary": 0, "indicators": 0}
+    stats = {"companies": 0, "summary": 0}
 
     # 公司简介用 ORM
     from database import SessionLocal
@@ -176,20 +157,7 @@ def collect_all(targets=None, verbose=True):
                 if verbose:
                     print("跳过")
 
-            # A股：财务指标
-            if verbose:
-                print(f"  📊 {code}: 财务指标...", end=" ")
-            records = ac.get_financial_indicators(code)
-            if records and "error" not in records[0]:
-                c = upsert_financial_indicator(conn, code, records)
-                stats["indicators"] += c
-                if verbose:
-                    print(f"{c} 条")
-            else:
-                if verbose:
-                    print("跳过")
-
-        conn.commit()
+            conn.commit()
 
     return stats
 

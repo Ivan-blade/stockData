@@ -44,22 +44,6 @@ class FinancialSummary(Base):
     )
 
 
-class FinancialIndicator(Base):
-    """财务指标 — 每季度一条"""
-    __tablename__ = "financial_indicator"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(10), nullable=False, index=True)
-    report_date = Column(Date, nullable=False)
-    indicator = Column(String(50), nullable=False, comment="指标名")
-    value = Column(Float, comment="数值")
-    updated_at = Column(DateTime, server_default=func.now())
-
-    __table_args__ = (
-        UniqueConstraint("code", "report_date", "indicator", name="uq_fin_indicator"),
-    )
-
-
 class Watchlist(Base):
     """自选股"""
     __tablename__ = "watchlist"

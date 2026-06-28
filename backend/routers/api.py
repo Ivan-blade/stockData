@@ -44,13 +44,10 @@ def get_company(code: str, db: Session = Depends(get_db)):
 # ── 财务(从 MySQL 读) ──
 @router.get("/companies/{code}/financial")
 def get_financial(code: str, db: Session = Depends(get_db)):
-    from models import FinancialSummary, FinancialIndicator
+    from models import FinancialSummary
 
     summaries = db.query(FinancialSummary).filter(
         FinancialSummary.code == code
-    ).all()
-    indicators = db.query(FinancialIndicator).filter(
-        FinancialIndicator.code == code
     ).all()
 
     # 按 report_date 聚合
@@ -61,14 +58,7 @@ def get_financial(code: str, db: Session = Depends(get_db)):
             sum_by_date[d] = {}
         sum_by_date[d][s.indicator] = s.value
 
-    ind_by_date = {}
-    for s in indicators:
-        d = str(s.report_date)
-        if d not in ind_by_date:
-            ind_by_date[d] = {}
-        ind_by_date[d][s.indicator] = s.value
-
-    return {"summary": sum_by_date, "indicators": ind_by_date}
+    return {"summary": sum_by_date}
 
 
 # ── 日K（实时转发）──

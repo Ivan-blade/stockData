@@ -56,36 +56,6 @@ def get_financial_summary(code: str) -> List[dict]:
         return [{"error": str(e)}]
 
 
-def get_financial_indicators(code: str) -> List[dict]:
-    """获取86项财务指标"""
-    try:
-        df = ak.stock_financial_analysis_indicator(symbol=code)
-        # df: 列为指标名，行为报告期
-        records = []
-        for _, row in df.iterrows():
-            rd = row.get("日期", "")
-            try:
-                rd_date = datetime.strptime(str(rd), "%Y%m%d").date()
-            except:
-                continue
-            for col in df.columns:
-                if col == "日期":
-                    continue
-                val = row[col]
-                if pd.notna(val):
-                    try:
-                        records.append({
-                            "report_date": rd_date.isoformat(),
-                            "indicator": col,
-                            "value": float(val),
-                        })
-                    except:
-                        pass
-        return records
-    except Exception as e:
-        return [{"error": str(e)}]
-
-
 def get_business_composition(code: str) -> dict:
     """主营业务构成（按产品/地区）"""
     result = {}

@@ -25,11 +25,6 @@ class FinancialSummaryOut(BaseModel):
     data: dict  # {指标名: 数值}
 
 
-class FinancialIndicatorOut(BaseModel):
-    report_date: date
-    data: dict
-
-
 # ── Kline（不存库，仅传输）──
 class KlineItem(BaseModel):
     date: str
