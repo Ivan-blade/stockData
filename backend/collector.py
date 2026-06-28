@@ -258,26 +258,20 @@ def collect_snapshots(targets=None, verbose=True):
                     close = float(row.get("最新价", 0))
                     if close <= 0:
                         continue
-                    pe = float(row.get("市盈率", 0)) if "市盈率" in row else 0
-                    pb = float(row.get("市净率", 0)) if "市净率" in row else 0
-                    mcap = float(row.get("总市值", 0)) if "总市值" in row else 0
                     chg = float(row.get("涨跌幅", 0)) if "涨跌幅" in row else 0
                     vol = int(row.get("成交量", 0)) if "成交量" in row else 0
-                    turn = float(row.get("换手率", 0)) if "换手率" in row else 0
+                    # 港股 spot 接口不返回 PE/PB/市值/换手率，补 NULL
                     conn.execute(text("""INSERT INTO daily_snapshot 
-                        (code,trade_date,close,volume,turnover,pe_ttm,pb,market_cap,change_pct,updated_at)
-                        VALUES (:c,:td,:cl,:vol,:turn,:pe,:pb,:mcap,:chg,:now)
+                        (code,trade_date,close,volume,change_pct,updated_at)
+                        VALUES (:c,:td,:cl,:vol,:chg,:now)
                         ON DUPLICATE KEY UPDATE close=VALUES(close),volume=VALUES(volume),
-                            turnover=VALUES(turnover),pe_ttm=VALUES(pe_ttm),pb=VALUES(pb),
-                            market_cap=VALUES(market_cap),change_pct=VALUES(change_pct),
-                            updated_at=VALUES(updated_at)"""),
-                        {"c":code,"td":today,"cl":close,"vol":vol,"turn":turn,
-                         "pe":pe,"pb":pb,"mcap":mcap,"chg":chg,"now":now})
+                            change_pct=VALUES(change_pct),updated_at=VALUES(updated_at)"""),
+                        {"c":code,"td":today,"cl":close,"vol":vol,"chg":chg,"now":now})
                     hk_count += 1
                     total_count += 1
                 conn.commit()
             if verbose:
-                print(f"✅ 港股 {hk_count} 条")
+                print(f"✅ 港股 {hk_count} 条（PE/PB/市值不可用）")
         except Exception as e:
             if verbose:
                 print(f"❌ {e}")
