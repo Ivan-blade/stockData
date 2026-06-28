@@ -7,6 +7,7 @@ interface Props { onSelect: (code: string) => void }
 export default function Companies({ onSelect }: Props) {
   const { theme } = useThemeStore()
   const isDark = theme === 'dark'
+  const [collecting, setCollecting] = useState<string | null>(null)
 
   const [showHK, setShowHK] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -91,10 +92,17 @@ export default function Companies({ onSelect }: Props) {
                     </td>
                     <td className="px-3.5 py-2">
                       <button onClick={async () => {
+                        setCollecting(c.code)
                         try {
                           await fetch(`/api/collect/${c.code}`, {method:'POST'})
                         } catch {}
-                      }} className={`px-2.5 py-1 text-xs rounded-md border cursor-pointer ${isDark ? 'bg-[#1a1d28] border-[#1e2235] text-amber-400' : 'bg-gray-100 border-gray-200 text-amber-600'} hover:opacity-80`}>采集</button>
+                        setCollecting(null)
+                      }} disabled={collecting === c.code}
+                        className={`px-2.5 py-1 text-xs rounded-md border cursor-pointer disabled:opacity-60 ${isDark ? 'bg-[#1a1d28] border-[#1e2235] text-amber-400' : 'bg-gray-100 border-gray-200 text-amber-600'} hover:opacity-80`}>
+                        {collecting === c.code ? (
+                          <span className="inline-block w-3 h-3 border-2 border-t-amber-400 rounded-full animate-spin align-middle" style={{borderColor:isDark?'#1e2235':'#d1d5db',borderTopColor:'#f5c842'}} />
+                        ) : '采集'}
+                      </button>
                     </td>
                   </tr>
                 ))}
