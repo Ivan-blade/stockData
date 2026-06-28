@@ -1,0 +1,15 @@
+{
+  "running": true,
+  "jobs": [
+    {
+      "id": "stockdata_snapshot",
+      "next_run": "2026-06-29 03:00:00+08:00",
+      "trigger": "cron[day_of_week='mon-fri', hour='3', minute='0']"
+    },
+    {
+      "id": "stockdata_sectors",
+      "next_run": "2026-06-29 16:00:00+08:00",
+      "trigger": "cron[day_of_week='mon-fri', hour='16', minute='0']"
+    }
+  ]
+}

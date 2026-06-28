@@ -1,0 +1,29 @@
+{
+  "total": 26,
+  "page": 1,
+  "page_size": 3,
+  "items": [
+    {
+      "code": "000333",
+      "name": "美的集团",
+      "exchange": "SZ",
+      "industry": "电气机械",
+      "business_scope": null,
+      "listing_date": null,
+      "total_shares": null,
+      "employees": null,
+      "website": null
+    },
+    {
+      "code": "000568",
+      "name": "泸州老窖",
+      "exchange": "SZ",
+      "industry": "酒、饮料",
+      "business_scope": null,
+      "listing_date": null,
+      "total_shares": null,
+      "employees": null,
+      "website": null
+    }
+  ]
+}

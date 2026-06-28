@@ -1,0 +1,31 @@
+{
+  "trade_date": "2026-06-28",
+  "board_type": "industry",
+  "total": 5,
+  "items": [
+    {
+      "code": "BK1443",
+      "name": "橡胶助剂",
+      "rank": 1,
+      "change_pct": 5.41,
+      "price": 5454.94,
+      "turnover": 5.54,
+      "up_count": 2,
+      "down_count": 0,
+      "lead_stock": "彤程新材",
+      "lead_change": 10.0
+    },
+    {
+      "code": "BK1431",
+      "name": "有机硅",
+      "rank": 2,
+      "change_pct": 4.72,
+      "price": 3919.72,
+      "turnover": 5.64,
+      "up_count": 8,
+      "down_count": 2,
+      "lead_stock": "晨光新材",
+      "lead_change": 10.02
+    }
+  ]
+}
