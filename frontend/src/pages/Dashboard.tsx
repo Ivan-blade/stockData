@@ -138,6 +138,7 @@ export default function Dashboard() {
       setStats({ total: all.length, a: all.filter(c=>c.exchange!=='HK').length, hk: all.filter(c=>c.exchange==='HK').length })
     })
     fetchLatestSnapshot()
+    fetchIndices()
   }, [])
 
   const [snap, setSnap] = useState<{date:string; total:number; has_pe:number; items:any[]} | null>(null)
@@ -146,6 +147,15 @@ export default function Dashboard() {
       const res = await fetch('/api/snapshots/latest')
       const d = await res.json()
       setSnap(d)
+    } catch {}
+  }
+
+  const [indices, setIndices] = useState<any[]>([])
+  const fetchIndices = async () => {
+    try {
+      const res = await fetch('/api/indices')
+      const d = await res.json()
+      setIndices(d.data ?? [])
     } catch {}
   }
 
@@ -219,6 +229,31 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* ── 大盘指数 ── */}
+      {indices.length > 0 && (
+        <div className="mb-6">
+          <div className={`text-xs tracking-wider mb-2 ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>大盘指数</div>
+          <div className="flex gap-2 flex-wrap">
+            {indices.map(i => {
+              const chg = i.change_pct ?? 0
+              return (
+                <div key={i.name} className={`flex-1 min-w-[120px] rounded-lg px-4 py-2.5 border ${
+                  isDark ? 'bg-[#0f1117]/60 border-[#1e2235]' : 'bg-white/80 border-gray-200'
+                }`}>
+                  <div className={`text-[11px] ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>{i.name}</div>
+                  <div className={`text-sm font-bold font-mono ${isDark ? 'text-[#e8edf5]' : 'text-gray-900'}`}>
+                    {i.price?.toFixed(2)}
+                  </div>
+                  <div className={`text-xs font-mono ${chg > 0 ? 'text-green-500' : chg < 0 ? 'text-red-500' : ''}`}>
+                    {chg > 0 ? '+' : ''}{chg.toFixed(2)}%
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Search bar + 切换 */}
       <div className="flex items-center gap-3 mb-4">
