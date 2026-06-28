@@ -34,6 +34,10 @@ def _run_task(name: str, cli_mode: str):
             targets = [t for t in FINANCIAL_TARGETS if t["exchange"] == "HK"]
             stats = collect_all(targets=targets, verbose=False)
             msg = f"港股: {stats['summary']} 条财务摘要"
+        elif cli_mode == "--hk-finance":
+            from collector import collect_hk_finance
+            total = collect_hk_finance(verbose=False)
+            msg = f"港股财务(全量): {total} 条"
         else:
             msg = f"未知模式: {cli_mode}"
 
@@ -82,10 +86,20 @@ def init_scheduler():
     scheduler.add_job(
         _run_task,
         CronTrigger(day_of_week="mon-fri", hour=16, minute=30),
-        args=["港股基本面", "--hk"],
+        args=["港股基本面（自选）", "--hk"],
         id="stockdata_hk",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    # 港股全量财务 - 每月1日凌晨4:00（非交易时段运行全量采集）
+    scheduler.add_job(
+        _run_task,
+        CronTrigger(day=1, hour=4, minute=0),
+        args=["港股全量财务", "--hk-finance"],
+        id="stockdata_hk_finance_monthly",
+        replace_existing=True,
+        misfire_grace_time=1800,
     )
 
     scheduler.start()

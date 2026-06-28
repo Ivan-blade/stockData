@@ -77,27 +77,28 @@ export default function Financial({ initialCode = '' }: { initialCode?: string }
       .then(d => {
         const items = d.items || []
         setStockList(items)
-        // 如果有 initialCode，直接加载那只
-        if (initialCode) {
-          setCode(initialCode)
-          fetchFinancial(initialCode)
-        } else if (items.length > 0 && !code) {
-          const c = items[0].code
-          setCode(c)
-          fetchFinancial(c)
+        // 确保第一个 useEffect 不重复触发 fetchFinancial（交给第二个 effect 处理）
+        if (!initialCode && items.length > 0) {
+          setCode(items[0].code)
+          setSelectedMetric('营业总收入')
+          fetchFinancial(items[0].code)
         }
       })
-      .catch(() => {})
+      .catch(() => setStockList([]))
   }, [showHK]) // eslint-disable-line
 
   // 当 initialCode 变化时（从公司库跳转），加载对应股票
   useEffect(() => {
     if (initialCode) {
       setCode(initialCode)
+      setSelectedMetric('营业总收入')
       fetchFinancial(initialCode)
-      // 自动切换到对应交易所
-      const isHK = stockList.some(s => s.code === initialCode && s.exchange === 'HK')
-      if (isHK) setShowHK(true)
+      // 根据代码格式自动切换交易所（5位代码=港股，6位=A股）
+      if (initialCode.length === 5) {
+        setShowHK(true)
+      } else {
+        setShowHK(false)
+      }
     }
   }, [initialCode])
 
@@ -130,7 +131,7 @@ export default function Financial({ initialCode = '' }: { initialCode?: string }
     return () => clearTimeout(timer)
   }, [search, showHK])
 
-  const displayList = search ? stockList : stockList.slice(0, 100)
+  const displayList = (search ? stockList : stockList.slice(0, 100)) || []
 
   // 使用 summary（财务摘要已包含所有指标）
   const merged = useMemo(() => {

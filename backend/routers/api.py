@@ -297,15 +297,20 @@ def trigger_collect():
 def trigger_collect_one(code: str):
     """采集指定公司"""
     from collector import collect_all
-    from models import Company
+    from models import Company, StockList
     from database import SessionLocal
 
     db = SessionLocal()
+    # 优先查 Company 表，再查 StockList 表
     c = db.query(Company).filter(Company.code == code).first()
+    if not c:
+        s = db.query(StockList).filter(StockList.code == code).first()
+        exchange = s.exchange if s else "SZ"
+        name = s.name if s else code
+    else:
+        exchange = c.exchange
+        name = c.name
     db.close()
-
-    exchange = c.exchange if c else "SZ"
-    name = c.name if c else code
 
     start = time.time()
     stats = collect_all(targets=[{"code": code, "exchange": exchange, "name": name}], verbose=False)

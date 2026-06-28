@@ -62,8 +62,29 @@ class TestCompanies(unittest.TestCase):
         self.assertNotEqual([i["code"] for i in r1["items"]], [i["code"] for i in r2["items"]])
 
     def test_search(self):
-        data = client.get("/api/companies?keyword=茅台&page=1&page_size=5").json()
+        data = client.get("/api/companies?keyword=美的&page=1&page_size=5").json()
         self.assertGreater(data["total"], 0)
+
+    def test_exchange_filter_a(self):
+        """测试 exchange=A 过滤 A 股 (SZ+SH)"""
+        data = client.get("/api/companies?exchange=A&page=1&page_size=50").json()
+        self.assertGreater(data["total"], 0)
+        for item in data["items"]:
+            self.assertIn(item["exchange"], ["SZ", "SH"])
+
+    def test_exchange_filter_hk(self):
+        """测试 exchange=HK 过滤港股"""
+        data = client.get("/api/companies?exchange=HK&page=1&page_size=50").json()
+        self.assertGreater(data["total"], 0)
+        for item in data["items"]:
+            self.assertEqual(item["exchange"], "HK")
+
+    def test_exchange_filter_sz(self):
+        """测试 exchange=SZ 过滤深交所"""
+        data = client.get("/api/companies?exchange=SZ&page=1&page_size=50").json()
+        self.assertGreater(data["total"], 0)
+        for item in data["items"]:
+            self.assertEqual(item["exchange"], "SZ")
 
     def test_detail(self):
         data = client.get("/api/companies/000333").json()
@@ -166,6 +187,20 @@ class TestSnapshots(unittest.TestCase):
         for f in ["code", "close", "pe_ttm", "pb"]:
             self.assertIn(f, item)
 
+    def test_latest_keyword_search(self):
+        """测试 snapshots/latest 的 keyword 搜索"""
+        data = client.get("/api/snapshots/latest?keyword=美的&page_size=10").json()
+        self.assertGreater(data["total"], 0)
+        for item in data["items"]:
+            self.assertIn("美的", item.get("name", ""))
+
+    def test_latest_keyword_code_search(self):
+        """测试 snapshots/latest 按代码搜索"""
+        data = client.get("/api/snapshots/latest?keyword=000333&page_size=10").json()
+        self.assertGreater(data["total"], 0)
+        for item in data["items"]:
+            self.assertIn("000333", item["code"])
+
     def test_code_filter(self):
         data = client.get("/api/snapshots?code=000333&days=7").json()
         for i in data["items"]:
@@ -174,6 +209,29 @@ class TestSnapshots(unittest.TestCase):
     def test_days_param(self):
         res = client.get("/api/snapshots?days=90")
         self.assertEqual(res.status_code, 200)
+
+
+class TestCollect(unittest.TestCase):
+    """采集接口测试（需数据库中有数据，标记为 slow 避免阻塞快速测试）"""
+    slow = True
+
+    def test_collect_a_stock(self):
+        """测试采集 A 股公司 - 返回 200"""
+        res = client.post("/api/collect/000333")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["ok"])
+        self.assertIn("elapsed", data)
+        self.assertIn("stats", data)
+
+    def test_collect_hk_stock(self):
+        """测试采集港股 - 返回 200"""
+        res = client.post("/api/collect/00700")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["ok"])
+        self.assertIn("elapsed", data)
+        self.assertIn("stats", data)
 
 
 class TestSectors(unittest.TestCase):

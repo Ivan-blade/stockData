@@ -199,8 +199,45 @@ def collect_all(targets=None, verbose=True):
             exchange = t["exchange"]
 
             if exchange == "HK":
+                # 港股：使用 stock_financial_hk_analysis_indicator_em 采集财务数据
                 if verbose:
-                    print(f"  📊 {code}: 港股（暂只建档，财务接口待接入）")
+                    print(f"  📊 {code}: 港股财务...", end=" ", flush=True)
+                try:
+                    df = ak.stock_financial_hk_analysis_indicator_em(symbol=code)
+                    records = []
+                    if df is not None and not df.empty:
+                        for _, row in df.iterrows():
+                            report_date_raw = str(row.iloc[0])[:10]
+                            try:
+                                rd = datetime.strptime(report_date_raw, "%Y-%m-%d").date()
+                            except ValueError:
+                                continue
+                            for col_idx in range(1, len(df.columns)):
+                                indicator = df.columns[col_idx]
+                                val = row.iloc[col_idx]
+                                if val is not None:
+                                    try:
+                                        numeric = float(val)
+                                        import math
+                                        if not (math.isnan(numeric) or math.isinf(numeric)):
+                                            records.append({
+                                                "report_date": rd.isoformat(),
+                                                "indicator": str(indicator),
+                                                "value": numeric,
+                                            })
+                                    except (ValueError, TypeError):
+                                        pass
+                    if records:
+                        c = upsert_financial_summary(conn, code, records)
+                        stats["summary"] += c
+                        if verbose:
+                            print(f"{c} 条")
+                    else:
+                        if verbose:
+                            print("无数据")
+                except Exception as e:
+                    if verbose:
+                        print(f"❌ {e}")
             else:
                 # A股：财务摘要
                 if verbose:
@@ -405,6 +442,123 @@ def collect_snapshots(verbose=True):
     return {"snapshot": total_count}
 
 
+def collect_hk_finance(verbose=True):
+    """采集港股财务数据（全量活跃股）
+
+    使用 stock_financial_hk_analysis_indicator_em() 获取港股财务分析指标，
+    写入 financial_summary 表（仅非衍生品/ETF）。
+    
+    Returns:
+        int: 写入的财务摘要条数
+    """
+    import time as _time
+    now = datetime.now()
+    total_count = 0
+    skipped = 0
+
+    if verbose:
+        print("  📊 港股全量财务数据采集...")
+
+    # 先拿全量行情列表（用于过滤停牌+衍生品）
+    try:
+        df_spot = ak.stock_hk_spot_em()
+        if verbose:
+            print(f"    → 行情列表 {len(df_spot)} 只")
+    except Exception as e:
+        if verbose:
+            print(f"    ❌ 行情列表获取失败: {e}")
+        return 0
+
+    valid_codes = []
+    for _, row in df_spot.iterrows():
+        code = str(row["代码"]).zfill(5)
+        name = str(row.get("名称", ""))
+        close = _sf(row.get("最新价", 0))
+        if close is None or close <= 0:
+            continue
+        # 跳过衍生品/ETF
+        name_u = name.upper()
+        if any(kw in name_u or kw in name for kw in DERIVATIVE_KEYWORDS):
+            skipped += 1
+            continue
+        valid_codes.append(code)
+
+    if verbose:
+        print(f"    → 有效 {len(valid_codes)} 只（跳过衍生品/ETF {skipped} 只）")
+
+    if not valid_codes:
+        if verbose:
+            print("    （无有效数据，跳过）")
+        return 0
+
+    # 分批采集财务指标
+    batch_size = 10
+    total_batches = (len(valid_codes) + batch_size - 1) // batch_size
+    conn = engine.connect()
+
+    try:
+        for batch_idx in range(0, len(valid_codes), batch_size):
+            batch = valid_codes[batch_idx:batch_idx + batch_size]
+            for code in batch:
+                try:
+                    df = ak.stock_financial_hk_analysis_indicator_em(symbol=code)
+                    if df is None or df.empty:
+                        continue
+                    # df columns: 报告期, 指标名称, 指标值
+                    # 标准格式：第一列=日期，其他列=指标，有一行指标名
+                    # 实际数据结构：
+                    #   报告期 | 营业总收入 | 毛利 | 归母净利润 | ...
+                    # 需要找出数值列
+                    for _, row in df.iterrows():
+                        report_date_raw = row.iloc[0]
+                        try:
+                            rd = datetime.strptime(str(report_date_raw)[:10], "%Y-%m-%d").date()
+                        except (ValueError, TypeError):
+                            try:
+                                rd = datetime.strptime(str(report_date_raw)[:10], "%Y-%m-%d").date()
+                            except (ValueError, TypeError):
+                                continue
+                        for col_idx in range(1, len(df.columns)):
+                            indicator = df.columns[col_idx]
+                            val = row.iloc[col_idx]
+                            if val is not None:
+                                try:
+                                    numeric = float(val)
+                                    import math
+                                    if math.isnan(numeric) or math.isinf(numeric):
+                                        continue
+                                    conn.execute(text("""INSERT INTO financial_summary
+                                        (code, report_date, indicator, value, updated_at)
+                                        VALUES (:code, :rd, :ind, :val, :now)
+                                        ON DUPLICATE KEY UPDATE value=VALUES(value), updated_at=VALUES(updated_at)"""),
+                                        {"code": code, "rd": rd,
+                                         "ind": str(indicator), "val": numeric, "now": now})
+                                    total_count += 1
+                                except (ValueError, TypeError):
+                                    continue
+                    conn.commit()
+
+                    if verbose:
+                        print(f"    ✅ {code}: {df.shape[0]} 期", flush=True)
+
+                except Exception as e:
+                    if verbose:
+                        print(f"    ⚠️ {code}: {e}", flush=True)
+
+                _time.sleep(0.3)
+
+            batch_num = batch_idx // batch_size + 1
+            if verbose and batch_num % 5 == 0:
+                print(f"    → 批次 {batch_num}/{total_batches} 完成，已采集 {total_count} 条", flush=True)
+
+    finally:
+        conn.close()
+
+    if verbose:
+        print(f"    ✅ 港股财务采集完成：共 {total_count} 条财务摘要")
+    return total_count
+
+
 def collect_sectors(verbose: bool = True, backfill_months: int = 1) -> dict:
     """采集行业/概念板块日数据，每日收盘后调用"""
     from datetime import timedelta
@@ -567,6 +721,18 @@ if __name__ == "__main__":
         print(f"✅ 板块数据采集完成！用时 {elapsed:.1f}s")
         print(f"   行业: {stats['industry']}  概念: {stats['concept']}")
         print(f"   清理: {stats['cleaned']} 条  缺天数: {stats.get('missing_days', 0)}")
+        print(f"{'='*40}")
+        sys.exit(0)
+
+    elif mode == "--hk-finance":
+        start = time.time()
+        print("🚀 开始采集港股全量财务数据")
+        print("=" * 40)
+        total = collect_hk_finance(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 港股财务采集完成！用时 {elapsed:.1f}s")
+        print(f"   财务摘要: {total} 条")
         print(f"{'='*40}")
         sys.exit(0)
 
