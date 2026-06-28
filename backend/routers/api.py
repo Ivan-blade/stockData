@@ -185,10 +185,103 @@ def remove_position(code: str, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-# ── 数据采集（手动触发）──
-import time
+# ── 板块数据 ──
+@router.get("/sectors")
+def list_sectors(
+    board_type: str = Query("industry", description="industry / concept"),
+    trade_date: str = Query("", description="指定日期 YYYY-MM-DD，默认最新"),
+    sort_by: str = Query("change_pct", description="排序字段"),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """获取行业/概念板块排行"""
+    from models import SectorDaily
+    from sqlalchemy import func as sa_func
 
-@router.post("/collect")
+    q = db.query(SectorDaily)
+    if board_type:
+        q = q.filter(SectorDaily.board_type == board_type)
+    if trade_date:
+        q = q.filter(SectorDaily.trade_date == trade_date)
+    else:
+        # 取最新日期
+        latest_date = db.query(sa_func.max(SectorDaily.trade_date)).filter(
+            SectorDaily.board_type == board_type
+        ).scalar()
+        if latest_date:
+            q = q.filter(SectorDaily.trade_date == latest_date)
+
+    if sort_by in ("change_pct", "up_count", "turnover", "total_market_cap"):
+        q = q.order_by(getattr(SectorDaily, sort_by).desc())
+
+    items = q.limit(limit).all()
+    date_str = str(items[0].trade_date) if items else None
+    return {
+        "trade_date": date_str,
+        "board_type": board_type,
+        "total": len(items),
+        "items": [
+            {
+                "code": i.code,
+                "name": i.name,
+                "rank": i.rank,
+                "change_pct": i.change_pct,
+                "price": i.price,
+                "turnover": i.turnover,
+                "up_count": i.up_count,
+                "down_count": i.down_count,
+                "total_market_cap": i.total_market_cap,
+                "lead_stock": i.lead_stock,
+                "lead_change": i.lead_change,
+            }
+            for i in items
+        ],
+    }
+
+
+@router.get("/sectors/{code}/history")
+def sector_history(
+    code: str,
+    days: int = Query(60, ge=1, le=120),
+    db: Session = Depends(get_db),
+):
+    """获取单板块的历史日数据"""
+    from models import SectorDaily
+    q = db.query(SectorDaily).filter(
+        SectorDaily.code == code
+    ).order_by(SectorDaily.trade_date.desc()).limit(days)
+    items = q.all()
+    return {
+        "code": code,
+        "name": items[0].name if items else "",
+        "items": [
+            {
+                "trade_date": str(i.trade_date),
+                "change_pct": i.change_pct,
+                "up_count": i.up_count,
+                "down_count": i.down_count,
+                "turnover": i.turnover,
+            }
+            for i in items
+        ],
+    }
+
+
+@router.post("/collect/sector")
+def trigger_sector_collect():
+    """手动触发板块数据采集"""
+    from collector import collect_sectors
+    import time
+    start = time.time()
+    stats = collect_sectors(verbose=False)
+    elapsed = time.time() - start
+    return {
+        "ok": True,
+        "elapsed": f"{elapsed:.1f}s",
+        "stats": stats,
+    }
+
+
 def trigger_collect():
     """手动触发数据采集"""
     from collector import collect_all, print_stats

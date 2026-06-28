@@ -285,6 +285,121 @@ def collect_snapshots(targets=None, verbose=True):
     return {"snapshot": total_count}
 
 
+def collect_sectors(verbose: bool = True, backfill_months: int = 1) -> dict:
+    """采集行业/概念板块日数据，每日收盘后调用"""
+    from datetime import timedelta
+    from sqlalchemy import func as sa_func
+
+    now = datetime.now()
+    today = now.date()
+    stats = {"industry": 0, "concept": 0, "cleaned": 0}
+
+    def save_board(df, board_type: str) -> int:
+        count = 0
+        with engine.connect() as conn:
+            for _, row in df.iterrows():
+                try:
+                    chg = float(row.get("涨跌幅", 0)) if "涨跌幅" in row else 0
+                    conn.execute(text("""INSERT INTO sector_daily
+                        (trade_date, board_type, code, name, `rank`, change_pct, change_amount,
+                         price, total_market_cap, turnover, up_count, down_count,
+                         lead_stock, lead_change, created_at)
+                        VALUES (:td,:bt,:code,:name,:rk,:chg,:chg_amt,
+                         :price,:mcap,:turn,:up,:down,:lead,:ld_chg,:now)
+                        ON DUPLICATE KEY UPDATE
+                         change_pct=VALUES(change_pct), up_count=VALUES(up_count),
+                         down_count=VALUES(down_count), lead_stock=VALUES(lead_stock),
+                         lead_change=VALUES(lead_change)"""),
+                        {"td": today, "bt": board_type, "code": str(row.get("板块代码", "")),
+                         "name": str(row.get("板块名称", "")), "rk": int(row.get("排名", 0)),
+                         "chg": chg,
+                         "chg_amt": float(row.get("涨跌额", 0)) if "涨跌额" in row else 0,
+                         "price": float(row.get("最新价", 0)) if "最新价" in row else 0,
+                         "mcap": int(row.get("总市值", 0)) if "总市值" in row else 0,
+                         "turn": float(row.get("换手率", 0)) if "换手率" in row else 0,
+                         "up": int(row.get("上涨家数", 0)) if "上涨家数" in row else 0,
+                         "down": int(row.get("下跌家数", 0)) if "下跌家数" in row else 0,
+                         "lead": str(row.get("领涨股票", "")),
+                         "ld_chg": float(row.get("领涨股票-涨跌幅", 0))
+                                   if "领涨股票-涨跌幅" in row else 0,
+                         "now": now})
+                    count += 1
+                except Exception:
+                    pass
+            conn.commit()
+        return count
+
+    # ── 行业板块 ──
+    if verbose:
+        print("  📊 行业板块...", end=" ", flush=True)
+    try:
+        df = ak.stock_board_industry_name_em()
+        stats["industry"] = save_board(df, "industry")
+        if verbose:
+            print(f"✅ {stats['industry']} 条")
+    except Exception as e:
+        if verbose:
+            print(f"❌ 行业: {e}")
+
+    # ── 概念板块 ──
+    if verbose:
+        print("  📊 概念板块...", end=" ", flush=True)
+    try:
+        df = ak.stock_board_concept_name_em()
+        stats["concept"] = save_board(df, "concept")
+        if verbose:
+            print(f"✅ {stats['concept']} 条")
+    except Exception as e:
+        if verbose:
+            print(f"❌ 概念: {e}")
+
+    # ── 清理 60 天前旧数据 ──
+    cutoff = today - timedelta(days=60)
+    with engine.connect() as conn:
+        r = conn.execute(
+            text("DELETE FROM sector_daily WHERE trade_date < :cutoff"),
+            {"cutoff": cutoff}
+        )
+        conn.commit()
+        stats["cleaned"] = r.rowcount if r.rowcount > 0 else 0
+    if verbose:
+        print(f"  🧹 清理 60 天前: {stats['cleaned']} 条")
+
+    # ── 检查前一个月数据，缺则补填 ──
+    if verbose:
+        print("  🔍 检查历史数据完整性...", end=" ", flush=True)
+    try:
+        with engine.connect() as conn:
+            existing_dates = set(
+                r[0] for r in conn.execute(
+                    text("SELECT DISTINCT trade_date FROM sector_daily "
+                         "WHERE trade_date >= :start AND trade_date < :today "
+                         "AND board_type = 'industry'"),
+                    {"start": today - timedelta(days=backfill_months * 31), "today": today}
+                ).fetchall()
+            )
+
+        d = today - timedelta(days=1)
+        missing = 0
+        while d >= today - timedelta(days=backfill_months * 31):
+            if d.isoweekday() <= 5 and d not in existing_dates:
+                missing += 1
+            d -= timedelta(days=1)
+
+        if missing > 0:
+            if verbose:
+                print(f"缺 {missing} 天 (AKShare无法回溯板块快照, 仅记录)")
+        else:
+            if verbose:
+                print("✅ 完整")
+        stats["missing_days"] = missing
+    except Exception as e:
+        if verbose:
+            print(f"❌: {e}")
+
+    return stats
+
+
 def print_stats(stats, elapsed):
     """打印采集结果"""
     print(f"\n{'='*40}")
@@ -309,11 +424,22 @@ if __name__ == "__main__":
         targets = [t for t in TARGET_COMPANIES if t["exchange"] == "HK"]
         label = "港股"
     elif mode == "--snapshot":
+        start = time.time()
         stats = collect_snapshots(verbose=True)
         elapsed = time.time() - start
         print(f"\n{'='*40}")
         print(f"✅ 估值快照采集完成！用时 {elapsed:.1f}s")
         print(f"   行情: {stats['snapshot']} 条")
+        print(f"{'='*40}")
+        sys.exit(0)
+    elif mode == "--sector":
+        start = time.time()
+        stats = collect_sectors(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 板块数据采集完成！用时 {elapsed:.1f}s")
+        print(f"   行业: {stats['industry']}  概念: {stats['concept']}")
+        print(f"   清理: {stats['cleaned']} 条  缺天数: {stats.get('missing_days', 0)}")
         print(f"{'='*40}")
         sys.exit(0)
     else:

@@ -99,3 +99,29 @@ class DailySnapshot(Base):
     amplitude = Column(Float, comment="振幅")
     change_pct = Column(Float, comment="涨跌幅")
     updated_at = Column(DateTime, server_default=func.now())
+
+
+class SectorDaily(Base):
+    """行业板块日数据 — 每天 ~500 行，保留 60 天"""
+    __tablename__ = "sector_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, comment="交易日")
+    board_type = Column(String(10), nullable=False, comment="板块类型: industry(行业) / concept(概念)")
+    code = Column(String(10), nullable=False, comment="板块代码 BKxxxx")
+    name = Column(String(50), nullable=False, comment="板块名称")
+    rank = Column(Integer, comment="排名")
+    change_pct = Column(Float, comment="涨跌幅(%)")
+    change_amount = Column(Float, comment="涨跌额")
+    price = Column(Float, comment="最新价")
+    total_market_cap = Column(BigInteger, comment="总市值")
+    turnover = Column(Float, comment="换手率(%)")
+    up_count = Column(Integer, comment="上涨家数")
+    down_count = Column(Integer, comment="下跌家数")
+    lead_stock = Column(String(50), comment="领涨股票")
+    lead_change = Column(Float, comment="领涨股票涨跌幅")
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "board_type", "code", name="uq_sector_day"),
+    )

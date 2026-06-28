@@ -5,6 +5,7 @@ const tabs = [
   { key: 'dashboard', label: '概览' },
   { key: 'companies', label: '公司库' },
   { key: 'financial', label: '基本面' },
+  { key: 'sectors', label: '板块' },
 ]
 
 interface LayoutProps {
