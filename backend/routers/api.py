@@ -357,7 +357,7 @@ def latest_snapshots(db: Session = Depends(get_db)):
     if not latest_date:
         return {"date": None, "items": []}
     items = db.query(DailySnapshot).filter(DailySnapshot.trade_date == latest_date).all()
-    a_count = sum(1 for i in items if i.pe_ttm and i.pe_ttm > 0)
+    a_count = sum(1 for i in items if i.pe_ttm is not None)
     return {
         "date": str(latest_date),
         "total": len(items),

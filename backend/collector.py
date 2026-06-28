@@ -242,39 +242,58 @@ def collect_snapshots(targets=None, verbose=True):
             if verbose:
                 print(f"❌ {e}")
 
-    # ── 港股 ──
+    # ── 港股（逐只拉取，避免 stock_hk_spot_em 多进程不稳定）──
     if hk_targets:
         if verbose:
             print("  📸 拉取港股行情...", end=" ", flush=True)
-        try:
-            df_hk = ak.stock_hk_spot_em()
-            hk_codes = {t["code"] for t in hk_targets}
-            hk_count = 0
-            with engine.connect() as conn:
-                for _, row in df_hk.iterrows():
-                    code = str(row["代码"])
-                    if code not in hk_codes:
+        import time as _time
+        hk_count = 0
+        with engine.connect() as conn:
+            for t in hk_targets:
+                code = t["code"]
+                try:
+                    # 个股日K（取最新一天得收盘价+涨跌幅+成交量）
+                    hist = ak.stock_hk_hist(
+                        symbol=code, period="daily",
+                        start_date=today.isoformat().replace("-", ""),
+                        end_date=today.isoformat().replace("-", ""),
+                    )
+                    if hist.empty:
                         continue
-                    close = float(row.get("最新价", 0))
+                    last = hist.iloc[-1]
+                    close = float(last.get("收盘", 0))
                     if close <= 0:
                         continue
-                    chg = float(row.get("涨跌幅", 0)) if "涨跌幅" in row else 0
-                    vol = int(row.get("成交量", 0)) if "成交量" in row else 0
-                    # 港股 spot 接口不返回 PE/PB/市值/换手率，补 NULL
+
+                    # 财务指标（PE/PB/市值）
+                    fin = ak.stock_hk_financial_indicator_em(symbol=code)
+                    pe = pb = mcap = None
+                    if not fin.empty:
+                        r = fin.iloc[0]
+                        pe = float(r["市盈率"]) if r.get("市盈率") else None
+                        pb = float(r["市净率"]) if r.get("市净率") else None
+                        mcap = float(r["总市值(港元)"]) if r.get("总市值(港元)") else None
+
                     conn.execute(text("""INSERT INTO daily_snapshot 
-                        (code,trade_date,close,volume,change_pct,updated_at)
-                        VALUES (:c,:td,:cl,:vol,:chg,:now)
+                        (code,trade_date,close,volume,pe_ttm,pb,market_cap,change_pct,updated_at)
+                        VALUES (:c,:td,:cl,:vol,:pe,:pb,:mcap,:chg,:now)
                         ON DUPLICATE KEY UPDATE close=VALUES(close),volume=VALUES(volume),
-                            change_pct=VALUES(change_pct),updated_at=VALUES(updated_at)"""),
-                        {"c":code,"td":today,"cl":close,"vol":vol,"chg":chg,"now":now})
+                            pe_ttm=VALUES(pe_ttm),pb=VALUES(pb),
+                            market_cap=VALUES(market_cap),change_pct=VALUES(change_pct),
+                            updated_at=VALUES(updated_at)"""),
+                        {"c":code,"td":today,"cl":close,
+                         "vol": int(last.get("成交量", 0)),
+                         "chg": float(last.get("涨跌幅", 0)),
+                         "pe": pe, "pb": pb, "mcap": mcap, "now": now})
                     hk_count += 1
                     total_count += 1
-                conn.commit()
-            if verbose:
-                print(f"✅ 港股 {hk_count} 条（PE/PB/市值不可用）")
-        except Exception as e:
-            if verbose:
-                print(f"❌ {e}")
+                except Exception as e:
+                    if verbose:
+                        print(f"\n    ⚠️ {code}: {e}")
+                _time.sleep(0.3)  # 避免频率限制
+            conn.commit()
+        if verbose:
+            print(f"✅ 港股 {hk_count} 条（含PE/PB/市值）")
 
     return {"snapshot": total_count}
 
