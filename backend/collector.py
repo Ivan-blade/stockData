@@ -275,8 +275,8 @@ def collect_snapshots(verbose=True):
                      "amp":_sf(row.get("振幅", 0)),
                      "chg":_sf(row.get("涨跌幅", 0)),
                      "now":now})
-                # 同步更新 stock_list 名称（自动跟随除权除息变化）
-                name = str(row.get("名称", "")).replace("XD", "").replace("XR", "").replace("DR", "").strip()
+                # 同步更新 stock_list 名称（使用源数据原名，XD/XR/DR 会自动跟随变化）
+                name = str(row.get("名称", ""))
                 if name:
                     conn.execute(text("UPDATE stock_list SET name = :name, updated_at = :now WHERE code = :code AND name != :name"),
                                  {"name": name, "now": now, "code": code})
