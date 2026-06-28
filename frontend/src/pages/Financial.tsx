@@ -76,9 +76,20 @@ export default function Financial() {
     fetchFinancial(c)
   }
 
-  const filtered = search
-    ? stockList.filter(c => c.name?.includes(search) || c.code.includes(search))
-    : stockList.slice(0, 100)
+  // 搜索走 API
+  useEffect(() => {
+    if (!search) return
+    const exchange = showHK ? 'HK' : 'A'
+    const timer = setTimeout(() => {
+      fetch(`/api/companies?exchange=${exchange}&keyword=${encodeURIComponent(search)}&page=1&page_size=20`)
+        .then(r => r.json())
+        .then(d => setStockList(d.items || []))
+        .catch(() => {})
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search, showHK])
+
+  const displayList = search ? stockList : stockList.slice(0, 100)
 
   // 使用 summary（财务摘要已包含所有指标）
   const merged = useMemo(() => {
@@ -200,7 +211,7 @@ export default function Financial() {
             <div className={`absolute top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto rounded-md border z-50 ${
               isDark ? 'bg-[#1a1d28] border-[#1e2235]' : 'bg-white border-gray-200'
             }`}>
-              {filtered.slice(0, 10).map(c => (
+              {displayList.slice(0, 10).map(c => (
                 <div
                   key={c.code}
                   onClick={() => { setSearch(''); handleSelect(c.code) }}
@@ -213,7 +224,7 @@ export default function Financial() {
                   <span className={`text-xs ml-2 ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>{c.exchange}</span>
                 </div>
               ))}
-              {filtered.length === 0 && (
+              {displayList.length === 0 && (
                 <div className={`px-3 py-2 text-xs ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>无匹配</div>
               )}
             </div>
