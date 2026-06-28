@@ -38,6 +38,10 @@ def _run_task(name: str, cli_mode: str):
             from collector import collect_hk_finance
             total = collect_hk_finance(verbose=False)
             msg = f"港股财务(全量): {total} 条"
+        elif cli_mode == "--hk-quarterly":
+            from collector import collect_hk_quarterly
+            stats = collect_hk_quarterly(verbose=False)
+            msg = f"港股利润表(季度): {stats['hk_quarterly']} 条, 覆盖 {stats['hk_ok']}/{stats['hk_total']} 只"
         else:
             msg = f"未知模式: {cli_mode}"
 
@@ -100,6 +104,16 @@ def init_scheduler():
         id="stockdata_hk_finance_monthly",
         replace_existing=True,
         misfire_grace_time=1800,
+    )
+
+    # 港股季度利润表 - 每月2日凌晨4:00（与1号的财务指标错开）
+    scheduler.add_job(
+        _run_task,
+        CronTrigger(day=2, hour=4, minute=0),
+        args=["港股季度利润表", "--hk-quarterly"],
+        id="stockdata_hk_quarterly",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     scheduler.start()

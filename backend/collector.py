@@ -674,6 +674,89 @@ def collect_sectors(verbose: bool = True, backfill_months: int = 1) -> dict:
     return stats
 
 
+def _fetch_hk_quarterly_one(code):
+    """采集单只港股利润表季度数据，返回 (code, count)"""
+    try:
+        df = ak.stock_financial_hk_report_em(
+            stock=code, symbol="利润表", indicator="报告期"
+        )
+        if df is None or df.empty:
+            return code, 0
+        count = 0
+        now = datetime.now()
+        with engine.connect() as conn:
+            for _, row in df.iterrows():
+                rd = str(row["REPORT_DATE"])[:10]
+                name = str(row["STD_ITEM_NAME"])
+                try:
+                    val = float(row["AMOUNT"])
+                except (ValueError, TypeError):
+                    continue
+                conn.execute(text("""INSERT INTO financial_summary
+                    (code, report_date, indicator, value, updated_at)
+                    VALUES (:code, :rd, :ind, :val, :now)
+                    ON DUPLICATE KEY UPDATE value=VALUES(value), updated_at=VALUES(updated_at)"""),
+                    {"code": code, "rd": rd, "ind": name, "val": val, "now": now})
+                count += 1
+            conn.commit()
+        return code, count
+    except Exception:
+        return code, 0
+
+
+def collect_hk_quarterly_for_one(code, verbose=False):
+    """采集单只港股利润表季度数据（供 API 单只采集调用）"""
+    code, count = _fetch_hk_quarterly_one(code)
+    if verbose:
+        print(f"    {'✅' if count else '⚠️'} {code}: {count} 条")
+    return count
+
+
+def collect_hk_quarterly(verbose=True):
+    """港股全量利润表季度数据采集（中文科目）
+
+    使用 stock_financial_hk_report_em() 获取每家活跃港股利润表明细，
+    写入 financial_summary 表（STD_ITEM_NAME 为中文科目名称）。
+
+    Returns:
+        dict: 采集统计
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time as _time
+
+    now = datetime.now()
+
+    # 获取活跃港股列表（有最新快照的）
+    with engine.connect() as conn:
+        codes = [r[0] for r in conn.execute(text("""
+            SELECT DISTINCT s.code FROM daily_snapshot s
+            JOIN stock_list l ON s.code = l.code
+            WHERE l.exchange='HK' AND s.trade_date=(SELECT MAX(trade_date) FROM daily_snapshot)
+        """)).fetchall()]
+
+    if verbose:
+        print(f"  📊 港股季度利润表采集: {len(codes)} 只")
+
+    total = 0
+    ok = 0
+
+    def fetch_one(code):
+        return _fetch_hk_quarterly_one(code)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(fetch_one, c) for c in codes]
+        for fut in as_completed(futures):
+            code, count = fut.result()
+            total += count
+            if count > 0:
+                ok += 1
+            _time.sleep(0.3)  # 限流
+
+    if verbose:
+        print(f"    ✅ 完成 {ok}/{len(codes)}, 共 {total} 条")
+    return {"hk_quarterly": total, "hk_ok": ok, "hk_total": len(codes)}
+
+
 def print_stats(stats, elapsed):
     """打印采集结果"""
     print(f"\n{'='*40}")
@@ -733,6 +816,18 @@ if __name__ == "__main__":
         print(f"\n{'='*40}")
         print(f"✅ 港股财务采集完成！用时 {elapsed:.1f}s")
         print(f"   财务摘要: {total} 条")
+        print(f"{'='*40}")
+        sys.exit(0)
+
+    elif mode == "--hk-quarterly":
+        start = time.time()
+        print("🚀 开始采集港股利润表季度数据")
+        print("=" * 40)
+        stats = collect_hk_quarterly(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 港股季度利润表采集完成！用时 {elapsed:.1f}s")
+        print(f"   覆盖: {stats['hk_ok']}/{stats['hk_total']} 只, 共 {stats['hk_quarterly']} 条")
         print(f"{'='*40}")
         sys.exit(0)
 

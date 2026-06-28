@@ -251,6 +251,14 @@ stockData/
 
 ---
 
+## 📡 数据采集
+
+采集机制、CLI 命令、API 接口、定时调度、数据量说明详见：
+
+➡️ [`COLLECTION.md`](COLLECTION.md)
+
+---
+
 ## 🧪 测试
 
 ### 快速运行

@@ -316,6 +316,15 @@ def trigger_collect_one(code: str):
     start = time.time()
     stats = collect_all(targets=[{"code": code, "exchange": exchange, "name": name}], verbose=False)
     elapsed = time.time() - start
+
+    # 港股补采集季度利润表（单只）
+    if exchange == "HK":
+        from collector import collect_hk_quarterly_for_one
+        q_start = time.time()
+        q_count = collect_hk_quarterly_for_one(code, verbose=False)
+        q_elapsed = time.time() - q_start
+        stats["hk_quarterly"] = q_count
+
     return {"ok": True, "elapsed": f"{elapsed:.1f}s", "stats": stats}
 
 
