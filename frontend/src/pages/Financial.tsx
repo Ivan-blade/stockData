@@ -232,6 +232,11 @@ export default function Financial() {
                   }`} style={{ minWidth: 120 }}>
                     指标
                   </th>
+                  <th className={`px-3 py-2 text-right font-medium ${
+                    isDark ? 'text-[#8892a4]' : 'text-gray-500'
+                  }`} style={{ minWidth: 80 }}>
+                    同比变化
+                  </th>
                   {dates.map(d => (
                     <th key={d} className={`px-3 py-2 text-right font-medium ${
                       isDark ? 'text-[#8892a4]' : 'text-gray-500'
@@ -247,11 +252,6 @@ export default function Financial() {
                       })(d)}</span>
                     </th>
                   ))}
-                  <th className={`px-3 py-2 text-right font-medium ${
-                    isDark ? 'text-[#8892a4]' : 'text-gray-500'
-                  }`} style={{ minWidth: 90 }}>
-                    同比变化
-                  </th>
                 </tr>
               </thead>
               {/* 表体 */}
@@ -289,6 +289,14 @@ export default function Financial() {
                           <span className="ml-1 text-[10px] opacity-60">📈</span>
                         )}
                       </td>
+                      {/* 同比 */}
+                      <td className={`px-3 py-2 text-right font-mono font-medium ${
+                        yoy == null
+                          ? isDark ? 'text-[#3a4260]' : 'text-gray-300'
+                          : yoy > 0 ? 'text-green-500' : 'text-red-500'
+                      }`}>
+                        {fmtPct(yoy)}
+                      </td>
                       {/* 各期数值 */}
                       {dates.map(d => {
                         const v = merged[d]?.[metric]
@@ -302,14 +310,6 @@ export default function Financial() {
                           </td>
                         )
                       })}
-                      {/* 同比 */}
-                      <td className={`px-3 py-2 text-right font-mono font-medium ${
-                        yoy == null
-                          ? isDark ? 'text-[#3a4260]' : 'text-gray-300'
-                          : yoy > 0 ? 'text-green-500' : 'text-red-500'
-                      }`}>
-                        {fmtPct(yoy)}
-                      </td>
                     </tr>
                   )
                 })}
