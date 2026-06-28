@@ -10,9 +10,6 @@ export default function Dashboard() {
   const [searchInput, setSearchInput] = useState('')
   const isDark = theme === 'dark'
 
-  // 名称清洗：去掉 XD/XR/DR 前缀（展示用，不改数据库）
-  const cleanName = (n: string) => n?.replace(/^(XD|XR|DR)/, '') || '-'
-
   // ── K-line 详情 ──
   const [klineCode, setKlineCode] = useState('')
   const [klineName, setKlineName] = useState('')
@@ -145,10 +142,11 @@ export default function Dashboard() {
   }, [])
 
   const [snap, setSnap] = useState<{date:string; total:number; page:number; page_size:number; has_pe:number; items:any[]} | null>(null)
-  const fetchLatestSnapshot = async (pg = 1, sort = 'market_cap', desc = true) => {
+  const fetchLatestSnapshot = async (pg = 1, sort = 'market_cap', desc = true, kw = '') => {
     try {
       const exchangeParam = showHK ? '&exchange=HK' : '&exchange=A'
-      const res = await fetch(`/api/snapshots/latest?page=${pg}&page_size=${pageSize}&sort_by=${sort}&sort_desc=${desc}${exchangeParam}`)
+      const kwParam = kw ? `&keyword=${encodeURIComponent(kw)}` : ''
+      const res = await fetch(`/api/snapshots/latest?page=${pg}&page_size=${pageSize}&sort_by=${sort}&sort_desc=${desc}${exchangeParam}${kwParam}`)
       const d = await res.json()
       setSnap(d)
     } catch {}
@@ -178,8 +176,8 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    fetchLatestSnapshot(page, sortKey, !sortAsc)
-  }, [page, sortKey, sortAsc, showHK])
+    fetchLatestSnapshot(page, sortKey, !sortAsc, searchInput)
+  }, [page, sortKey, sortAsc, showHK, searchInput])
 
   useEffect(() => { setPage(1) }, [searchInput, showHK])
 
@@ -190,7 +188,7 @@ export default function Dashboard() {
 
   const snapshotRows = (snap?.items || []).filter(r => {
     if (!searchInput) return true
-    return cleanName(r.name || '').includes(searchInput) || r.code.includes(searchInput)
+    return (r.name || '').includes(searchInput) || r.code.includes(searchInput)
   })
   const totalItems = snap?.total ?? 0
   const totalPages = Math.ceil(totalItems / pageSize) || 1
@@ -290,7 +288,7 @@ export default function Dashboard() {
                   klineCode === r.code ? (isDark ? 'bg-purple-500/10' : 'bg-purple-50') : ''
                 }`}>
                 <td className={`px-3.5 py-2 text-xs font-mono ${t('text-[#5a6275]')}`}>{r.code}</td>
-                <td className="px-3.5 py-2 text-sm font-medium">{cleanName(r.name)}</td>
+                <td className="px-3.5 py-2 text-sm font-medium">{r.name || '-'}</td>
                 <td className={`px-3.5 py-2 text-sm font-mono text-right`}>{r.close?.toFixed(2)}</td>
                 <td className={`px-3.5 py-2 text-sm font-mono text-right ${(r.change_pct||0) > 0 ? 'text-green-500' : (r.change_pct||0) < 0 ? 'text-red-500' : ''}`}>
                   {(r.change_pct||0) > 0 ? '+' : ''}{r.change_pct?.toFixed(2)}%
@@ -335,7 +333,7 @@ export default function Dashboard() {
               isDark ? 'border-[#1e2235]' : 'border-gray-200'
             }`}>
               <div>
-                <span className="font-semibold text-base">{cleanName(klineName)}</span>
+                <span className="font-semibold text-base">{klineName}</span>
                 <span className={`ml-2 text-xs font-mono ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>{klineCode}</span>
               </div>
               <button onClick={closeKline}

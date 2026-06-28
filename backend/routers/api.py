@@ -345,6 +345,7 @@ def latest_snapshots(
     sort_by: str = Query("market_cap", description="排序字段"),
     sort_desc: bool = Query(True, description="是否降序"),
     exchange: str = Query("", description="SZ/SH/HK"),
+    keyword: str = Query("", description="按名称或代码搜索"),
 ):
     """获取最新快照（服务端分页 + 排序）"""
     from models import DailySnapshot, StockList
@@ -366,6 +367,12 @@ def latest_snapshots(
         q = q.filter(StockList.exchange.in_(["SZ", "SH"]))
     elif exchange:
         q = q.filter(StockList.exchange == exchange)
+
+    if keyword:
+        q = q.filter(
+            StockList.name.like(f"%{keyword}%") |
+            DailySnapshot.code.like(f"%{keyword}%")
+        )
 
     # 总条数
     total = q.count()
