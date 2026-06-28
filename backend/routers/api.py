@@ -338,24 +338,52 @@ def list_snapshots(
 
 
 @router.get("/snapshots/latest")
-def latest_snapshots(db: Session = Depends(get_db)):
-    """获取所有公司的最新一条快照"""
+def latest_snapshots(
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=200, description="每页条数"),
+    sort_by: str = Query("market_cap", description="排序字段"),
+    sort_desc: bool = Query(True, description="是否降序"),
+    exchange: str = Query("", description="SZ/SH/HK"),
+):
+    """获取最新快照（服务端分页 + 排序）"""
     from models import DailySnapshot, StockList
     from sqlalchemy import func as sa_func
-    # 取最新日期
+
     latest_date = db.query(sa_func.max(DailySnapshot.trade_date)).scalar()
     if not latest_date:
-        return {"date": None, "items": []}
-    rows = db.query(
+        return {"date": None, "total": 0, "has_pe": 0, "items": []}
+
+    q = db.query(
         DailySnapshot, StockList.name
     ).outerjoin(
         StockList, DailySnapshot.code == StockList.code
-    ).filter(DailySnapshot.trade_date == latest_date).all()
-    a_count = sum(1 for s, _ in rows if s.pe_ttm is not None)
+    ).filter(DailySnapshot.trade_date == latest_date)
+
+    if exchange == "HK":
+        q = q.filter(StockList.exchange == "HK")
+    elif exchange == "A":
+        q = q.filter(StockList.exchange.in_(["SZ", "SH"]))
+    elif exchange:
+        q = q.filter(StockList.exchange == exchange)
+
+    # 总条数
+    total = q.count()
+    has_pe = q.filter(DailySnapshot.pe_ttm.isnot(None)).count()
+
+    # 排序
+    sort_col = getattr(DailySnapshot, sort_by, DailySnapshot.market_cap)
+    q = q.order_by(sort_col.desc() if sort_desc else sort_col.asc())
+
+    # 分页
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+
     return {
         "date": str(latest_date),
-        "total": len(rows),
-        "has_pe": a_count,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_pe": has_pe,
         "items": [
             {
                 "code": s.code,

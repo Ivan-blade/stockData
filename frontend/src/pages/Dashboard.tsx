@@ -141,10 +141,11 @@ export default function Dashboard() {
     fetchIndices()
   }, [])
 
-  const [snap, setSnap] = useState<{date:string; total:number; has_pe:number; items:any[]} | null>(null)
-  const fetchLatestSnapshot = async () => {
+  const [snap, setSnap] = useState<{date:string; total:number; page:number; page_size:number; has_pe:number; items:any[]} | null>(null)
+  const fetchLatestSnapshot = async (pg = 1, sort = 'market_cap', desc = true) => {
     try {
-      const res = await fetch('/api/snapshots/latest')
+      const exchangeParam = showHK ? '&exchange=HK' : '&exchange=A'
+      const res = await fetch(`/api/snapshots/latest?page=${pg}&page_size=${pageSize}&sort_by=${sort}&sort_desc=${desc}${exchangeParam}`)
       const d = await res.json()
       setSnap(d)
     } catch {}
@@ -159,52 +160,37 @@ export default function Dashboard() {
     } catch {}
   }
 
-  // 合并快照数据 + 公司名称 + 交易所
-  const rawRows = (snap?.items || []).map(item => {
-    const company = cache.find(c => c.code === item.code)
-    return { ...item, name: item.name || company?.name || '-', exchange: company?.exchange || '-' }
-  }).filter(r => {
-    if (!searchInput) return true
-    return r.name.includes(searchInput) || r.code.includes(searchInput)
-  })
-
+  // ── 服务端分页（API 已处理排序+交易所筛选）──
   const [showHK, setShowHK] = useState(false)
-  const filteredRows = showHK
-    ? rawRows.filter(r => r.exchange === 'HK')
-    : rawRows.filter(r => r.exchange !== 'HK')
-  const exchangeLabel = showHK ? '港股' : 'A股'
-
-  // 排序
-  const [sortKey, setSortKey] = useState<string>('')
-  const [sortAsc, setSortAsc] = useState(true)
-  let snapshotRows = [...filteredRows]
-  if (sortKey) {
-    snapshotRows.sort((a, b) => {
-      const av = a[sortKey] ?? 0
-      const bv = b[sortKey] ?? 0
-      if (typeof av === 'string') return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av)
-      return sortAsc ? (av as number) - (bv as number) : (bv as number) - (av as number)
-    })
-  }
+  const [sortKey, setSortKey] = useState<string>('market_cap')
+  const [sortAsc, setSortAsc] = useState(false)
+  const [page, setPage] = useState(1)
+  const pageSize = 10
 
   const toggleSort = (key: string) => {
     if (sortKey === key) {
-      if (sortAsc) setSortAsc(false)
-      else setSortKey('')
-    } else { setSortKey(key); setSortAsc(true) }
+      if (!sortAsc) setSortAsc(true)
+      else { setSortKey('market_cap'); setSortAsc(false) }
+    } else { setSortKey(key); setSortAsc(false) }
   }
+
+  useEffect(() => {
+    fetchLatestSnapshot(page, sortKey, !sortAsc)
+  }, [page, sortKey, sortAsc, showHK])
+
+  useEffect(() => { setPage(1) }, [searchInput, showHK])
+
   const sortIcon = (key: string) => {
     if (sortKey !== key) return ''
     return sortAsc ? ' ▲' : ' ▼'
   }
 
-  // 分页
-  const pageSize = 10
-  const [page, setPage] = useState(1)
-  const totalPages = Math.ceil(snapshotRows.length / pageSize) || 1
-  const pagedRows = snapshotRows.slice((page - 1) * pageSize, page * pageSize)
-
-  useEffect(() => { setPage(1) }, [searchInput])
+  const snapshotRows = (snap?.items || []).filter(r => {
+    if (!searchInput) return true
+    return (r.name || '').includes(searchInput) || r.code.includes(searchInput)
+  })
+  const totalItems = snap?.total ?? 0
+  const totalPages = Math.ceil(totalItems / pageSize) || 1
 
   return (
     <div>
@@ -294,7 +280,7 @@ export default function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {pagedRows.map(r => (
+            {snapshotRows.map(r => (
               <tr key={r.code}
                 onClick={() => openKline(r.code, r.name)}
                 className={`border-b cursor-pointer transition-colors ${t('border-[#1e2235]/50 hover:bg-purple-500/5')} ${
@@ -322,7 +308,7 @@ export default function Dashboard() {
 
       {/* Pagination */}
       <div className="flex items-center justify-between mt-3">
-        <span className={`text-xs ${t('text-[#5a6275]')}`}>共 {snapshotRows.length} 条，{(page-1)*pageSize+1}-{Math.min(page*pageSize, snapshotRows.length)}</span>
+        <span className={`text-xs ${t('text-[#5a6275]')}`}>共 {totalItems} 条，{(page-1)*pageSize+1}-{Math.min(page*pageSize, totalItems)}</span>
         <div className="flex items-center gap-2">
           <button disabled={page<=1} onClick={()=>setPage(page-1)} className={`px-3 py-1 text-xs rounded-md border cursor-pointer disabled:opacity-30 ${t('bg-[#1a1d28] border-[#1e2235] text-[#8892a4]')}`}>上一页</button>
           {Array.from({length: Math.min(totalPages, 5)}, (_,i)=>{
