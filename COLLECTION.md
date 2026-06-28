@@ -119,3 +119,13 @@ GET /api/scheduler/status
 | 港股季度利润表 | `stock_financial_hk_report_em()` | 东方财富 |
 | 板块数据 | `stock_board_industry_name_em()` | 东方财富 |
 | 大盘指数 | `stock_zh_index_spot_em()` | 东方财富 |
+
+## 黑名单机制
+
+部分港股（ETF、REITs 等）没有传统利润表，每次采集会浪费等待超时。采集器内置黑名单规则：
+
+- **代码前缀黑名单**：`02`（ETF）、`08`（REITs）—— 直接跳过，不等超时
+- **运行时失败记录**：首次采集失败的股票记录到内存 Set，同次运行后续遇到直接跳过
+- **适用场景**：`--hk-quarterly`、`--hk-finance`
+
+后续如需调整黑名单，修改 `collector.py` 中对应函数的 `BLACKLIST_PREFIXES` 元组即可。

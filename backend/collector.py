@@ -45,6 +45,14 @@ FINANCIAL_TARGETS = [
 # A股代码 → 交易所前缀
 EX_PREFIX = {"SZ": "sz", "SH": "sh", "BJ": "bj"}
 
+# 港股黑名单前缀（ETF/REITs/衍生品，无需请求即可跳过）
+BLACKLIST_PREFIXES = ('02', '08')
+
+# 港股衍生品/ETF 名称关键词
+DERIVATIVE_KEYWORDS = ["ETF", "REIT", "CBBC", "WARRANT", "INLINE", "BULL", "BEAR",
+                        "XIU", "FXI", "EEM", "身份", "期货", "期权", "债券",
+                        "INVESCO", "ISHARES", "ABF", "TRACKER"]
+
 
 def collect_stock_list(verbose=True):
     """拉取全量 A 股 + 港股清单写入 stock_list（--list 模式）"""
@@ -457,34 +465,39 @@ def collect_hk_finance(verbose=True):
     skipped = 0
 
     if verbose:
-        print("  📊 港股全量财务数据采集...")
+        print("  📊 港股全量财务数据采集...", flush=True)
 
     # 先拿全量行情列表（用于过滤停牌+衍生品）
     try:
         df_spot = ak.stock_hk_spot_em()
         if verbose:
-            print(f"    → 行情列表 {len(df_spot)} 只")
+            print(f"    → 行情列表 {len(df_spot)} 只", flush=True)
     except Exception as e:
         if verbose:
-            print(f"    ❌ 行情列表获取失败: {e}")
+            print(f"    ❌ 行情列表获取失败: {e}", flush=True)
         return 0
 
     valid_codes = []
+    rejected_prefix = 0
     for _, row in df_spot.iterrows():
         code = str(row["代码"]).zfill(5)
         name = str(row.get("名称", ""))
         close = _sf(row.get("最新价", 0))
         if close is None or close <= 0:
             continue
-        # 跳过衍生品/ETF
+        # 跳过黑名单前缀（ETF/REITs 等）
+        if code.startswith(BLACKLIST_PREFIXES):
+            rejected_prefix += 1
+            continue
+        # 跳过衍生品/ETF（名称关键词）
         name_u = name.upper()
         if any(kw in name_u or kw in name for kw in DERIVATIVE_KEYWORDS):
-            skipped += 1
+            rejected_prefix += 1
             continue
         valid_codes.append(code)
 
     if verbose:
-        print(f"    → 有效 {len(valid_codes)} 只（跳过衍生品/ETF {skipped} 只）")
+        print(f"    → 有效 {len(valid_codes)} 只（跳过 {rejected_prefix} 只）", flush=True)
 
     if not valid_codes:
         if verbose:
@@ -555,7 +568,7 @@ def collect_hk_finance(verbose=True):
         conn.close()
 
     if verbose:
-        print(f"    ✅ 港股财务采集完成：共 {total_count} 条财务摘要")
+        print(f"    ✅ 港股财务采集完成：共 {total_count} 条财务摘要", flush=True)
     return total_count
 
 
@@ -734,8 +747,13 @@ def collect_hk_quarterly(verbose=True):
             WHERE l.exchange='HK' AND s.trade_date=(SELECT MAX(trade_date) FROM daily_snapshot)
         """)).fetchall()]
 
+    # 跳过黑名单前缀（ETF/REITs，不用请求 API 即可确定无利润表）
+    raw_count = len(codes)
+    codes = [c for c in codes if not c.startswith(BLACKLIST_PREFIXES)]
+    skipped = raw_count - len(codes)
+
     if verbose:
-        print(f"  📊 港股季度利润表采集: {len(codes)} 只")
+        print(f"  📊 港股季度利润表采集: {len(codes)} 只（跳过黑名单 {skipped} 只）", flush=True)
 
     total = 0
     ok = 0
@@ -753,8 +771,87 @@ def collect_hk_quarterly(verbose=True):
             _time.sleep(0.3)  # 限流
 
     if verbose:
-        print(f"    ✅ 完成 {ok}/{len(codes)}, 共 {total} 条")
-    return {"hk_quarterly": total, "hk_ok": ok, "hk_total": len(codes)}
+        print(f"    ✅ 完成 {ok}/{len(codes)}, 共 {total} 条（跳过 {skipped} 只黑名单）", flush=True)
+    return {"hk_quarterly": total, "hk_ok": ok, "hk_total": len(codes), "hk_skipped": skipped}
+
+
+def collect_a_finance(verbose=True):
+    """采集全量A股财务摘要数据"""
+    from datetime import datetime
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+    import math
+    import pandas as pd
+    import akshare as ak
+    from database import engine
+    from sqlalchemy import text
+
+    now = datetime.now()
+
+    # 获取所有A股代码（不含BJ，BJ无此接口数据）
+    with engine.connect() as conn:
+        codes = [r[0] for r in conn.execute(text(
+            "SELECT code FROM stock_list WHERE exchange IN ('SZ','SH')"
+        )).fetchall()]
+
+    if verbose:
+        print(f'  📊 A股财务数据采集: {len(codes)} 只', flush=True)
+
+    def fetch_one(code):
+        try:
+            df = ak.stock_financial_abstract(symbol=code)
+            if df.empty:
+                return code, 0, None
+            # df columns: 选项, 指标, YYYYMMDD, YYYYMMDD, ...
+            df_idx = df.set_index(["选项", "指标"])
+            count = 0
+            with engine.connect() as conn:
+                for col in df_idx.columns:
+                    try:
+                        rd = datetime.strptime(col, "%Y%m%d").date()
+                    except:
+                        continue
+                    for idx in df_idx.index:
+                        val = df_idx.loc[idx, col]
+                        if pd.notna(val):
+                            try:
+                                numeric = float(val)
+                                if math.isnan(numeric) or math.isinf(numeric):
+                                    continue
+                                conn.execute(text("""INSERT INTO financial_summary
+                                    (code, report_date, indicator, value, updated_at)
+                                    VALUES (:code, :rd, :ind, :val, :now)
+                                    ON DUPLICATE KEY UPDATE value=VALUES(value)"""),
+                                    {'code': code, 'rd': rd, 'ind': idx[1], 'val': numeric, 'now': now})
+                                count += 1
+                            except:
+                                pass
+                conn.commit()
+            return code, count, None
+        except Exception as e:
+            return code, 0, str(e)
+
+    total = 0
+    ok = 0
+    errors = 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(fetch_one, c) for c in codes]
+        for i, fut in enumerate(as_completed(futures)):
+            code, count, err = fut.result()
+            if count > 0:
+                ok += 1
+                total += count
+            elif err is not None:
+                errors += 1
+                if verbose:
+                    print(f'    ⚠️ {code}: {err}', flush=True)
+            if verbose and (i + 1) % 500 == 0:
+                print(f'    📈 进度: {i+1}/{len(codes)}, 成功 {ok}, 失败 {errors}, 共 {total} 条', flush=True)
+            time.sleep(0.3)
+
+    if verbose:
+        print(f'  ✅ 完成 {ok}/{len(codes)}, 失败 {errors}, 共 {total} 条', flush=True)
+    return {'a_finance': total, 'a_ok': ok, 'a_total': len(codes), 'a_errors': errors}
 
 
 def print_stats(stats, elapsed):
@@ -828,6 +925,18 @@ if __name__ == "__main__":
         print(f"\n{'='*40}")
         print(f"✅ 港股季度利润表采集完成！用时 {elapsed:.1f}s")
         print(f"   覆盖: {stats['hk_ok']}/{stats['hk_total']} 只, 共 {stats['hk_quarterly']} 条")
+        print(f"{'='*40}")
+        sys.exit(0)
+
+    elif mode == "--a-finance":
+        start = time.time()
+        print("🚀 开始采集全量A股财务摘要数据")
+        print("=" * 40)
+        stats = collect_a_finance(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ A股财务采集完成！用时 {elapsed:.1f}s")
+        print(f"   覆盖: {stats['a_ok']}/{stats['a_total']} 只, 失败 {stats.get('a_errors', 0)}, 共 {stats['a_finance']} 条")
         print(f"{'='*40}")
         sys.exit(0)
 

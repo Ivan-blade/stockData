@@ -41,7 +41,11 @@ def _run_task(name: str, cli_mode: str):
         elif cli_mode == "--hk-quarterly":
             from collector import collect_hk_quarterly
             stats = collect_hk_quarterly(verbose=False)
-            msg = f"港股利润表(季度): {stats['hk_quarterly']} 条, 覆盖 {stats['hk_ok']}/{stats['hk_total']} 只"
+            msg = f"港股利润表(季度): {stats['hk_quarterly']} 条, 覆盖 {stats['hk_ok']}/{stats['hk_total']} 只, 跳过黑名单 {stats.get('hk_skipped', 0)}"
+        elif cli_mode == "--a-finance":
+            from collector import collect_a_finance
+            stats = collect_a_finance(verbose=False)
+            msg = f"A股全量财务: {stats['a_ok']}/{stats['a_total']} 只, 共 {stats['a_finance']} 条"
         else:
             msg = f"未知模式: {cli_mode}"
 
@@ -112,6 +116,16 @@ def init_scheduler():
         CronTrigger(day=2, hour=4, minute=0),
         args=["港股季度利润表", "--hk-quarterly"],
         id="stockdata_hk_quarterly",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # A股全量财务 - 每月3日凌晨5:00（避开1号港股年指标和2号港股季利润表）
+    scheduler.add_job(
+        _run_task,
+        CronTrigger(day=3, hour=5, minute=0),
+        args=["A股全量财务", "--a-finance"],
+        id="stockdata_a_finance",
         replace_existing=True,
         misfire_grace_time=3600,
     )
