@@ -251,6 +251,72 @@ stockData/
 
 ---
 
+## 🧪 测试
+
+### 快速运行
+
+```bash
+cd backend
+PYTHONPATH=. python3 tests/test_api.py
+# 31 tests in ~0.5s ✅
+```
+
+### 测试架构
+
+```
+backend/tests/
+├── test_api.py              # 31 条测试用例
+└── fixtures/                # 静态响应数据（9 个 JSON）
+```
+
+### 编码规则
+
+1. **零外部网络依赖** — 不得调用 AKShare 或其他外部 API。涉及外部数据的测试必须使用 `fixtures/` 下的 JSON fixture 文件。
+
+2. **Mock async 外部函数** — 路由中调用的 async 函数（如 `routers.api.ac.get_indices`）用 `AsyncMock` 拦截：
+
+```python
+@patch("routers.api.ac.get_indices", new_callable=AsyncMock)
+def test_indices(self, mock_indices):
+    mock_indices.return_value = load_fixture("indices.json")["data"]
+    res = client.get("/api/indices")
+    assert res.status_code == 200
+```
+
+3. **数据库测试不 mock** — 直接操作本地 MySQL，不自建 mock DB。测试前后通过 `setUp/tearDown` 清理数据（自选/持仓等）。
+
+4. **数据结构校验优先** — 优先测返回 JSON 的字段完整性（字段存在、类型正确），而非具体数值。
+
+```python
+# ✅ 推荐：校验字段存在
+for f in ["code", "name", "close", "pe_ttm"]:
+    self.assertIn(f, item)
+    
+# ❌ 避免：校验具体数值
+self.assertEqual(item["close"], 78.55)
+```
+
+5. **纯转换测试** — 新增 `TestTransformation` 类，直接用 fixture 数据校验 model 映射逻辑，不经过 HTTP 请求：
+
+```python
+class TestTransformation(unittest.TestCase):
+    def test_company_to_out(self):
+        raw = load_fixture("company.json")
+        self.assertEqual(raw["code"], "000333")
+        self.assertIn("exchange", raw)
+```
+
+6. **新增 fixture** — 如果新增端点需要外部数据，先通过 curl 采集真实响应保存为 fixture，再用 mock 测试：
+
+```bash
+curl -s 'http://localhost:8899/api/snapshots/latest' \
+  -o tests/fixtures/snapshot.json
+```
+
+7. **运行速度** — 全部测试应在 1 秒内完成。如果超过则说明有未 mock 的外部调用。
+
+---
+
 ## 🛠 技术栈
 
 ### 后端
