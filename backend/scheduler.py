@@ -25,15 +25,15 @@ def _run_task(name: str, cli_mode: str):
             stats = collect_sectors(verbose=False)
             msg = f"行业 {stats['industry']} + 概念 {stats['concept']} = {stats['industry']+stats['concept']} 条 | 清理 {stats['cleaned']} | 缺 {stats.get('missing_days',0)} 天"
         elif cli_mode == "--a":
-            from collector import collect_all, TARGET_COMPANIES
-            targets = [t for t in TARGET_COMPANIES if t["exchange"] != "HK"]
+            from collector import collect_all, FINANCIAL_TARGETS
+            targets = [t for t in FINANCIAL_TARGETS if t["exchange"] != "HK"]
             stats = collect_all(targets=targets, verbose=False)
-            msg = f"A股: {stats['summary']} 条财务摘要 + {stats['indicators']} 条指标"
+            msg = f"A股: {stats['summary']} 条财务摘要"
         elif cli_mode == "--hk":
-            from collector import collect_all, TARGET_COMPANIES
-            targets = [t for t in TARGET_COMPANIES if t["exchange"] == "HK"]
+            from collector import collect_all, FINANCIAL_TARGETS
+            targets = [t for t in FINANCIAL_TARGETS if t["exchange"] == "HK"]
             stats = collect_all(targets=targets, verbose=False)
-            msg = f"港股: {stats['summary']} 条财务摘要 + {stats['indicators']} 条指标"
+            msg = f"港股: {stats['summary']} 条财务摘要"
         else:
             msg = f"未知模式: {cli_mode}"
 

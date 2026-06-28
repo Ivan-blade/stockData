@@ -340,29 +340,34 @@ def list_snapshots(
 @router.get("/snapshots/latest")
 def latest_snapshots(db: Session = Depends(get_db)):
     """获取所有公司的最新一条快照"""
-    from models import DailySnapshot
+    from models import DailySnapshot, StockList
     from sqlalchemy import func as sa_func
     # 取最新日期
     latest_date = db.query(sa_func.max(DailySnapshot.trade_date)).scalar()
     if not latest_date:
         return {"date": None, "items": []}
-    items = db.query(DailySnapshot).filter(DailySnapshot.trade_date == latest_date).all()
-    a_count = sum(1 for i in items if i.pe_ttm is not None)
+    rows = db.query(
+        DailySnapshot, StockList.name
+    ).outerjoin(
+        StockList, DailySnapshot.code == StockList.code
+    ).filter(DailySnapshot.trade_date == latest_date).all()
+    a_count = sum(1 for s, _ in rows if s.pe_ttm is not None)
     return {
         "date": str(latest_date),
-        "total": len(items),
+        "total": len(rows),
         "has_pe": a_count,
         "items": [
             {
-                "code": i.code,
-                "close": i.close,
-                "pe_ttm": i.pe_ttm,
-                "pb": i.pb,
-                "market_cap": i.market_cap,
-                "turnover": i.turnover,
-                "change_pct": i.change_pct,
+                "code": s.code,
+                "name": name or s.code,
+                "close": s.close,
+                "pe_ttm": s.pe_ttm,
+                "pb": s.pb,
+                "market_cap": s.market_cap,
+                "turnover": s.turnover,
+                "change_pct": s.change_pct,
             }
-            for i in items
+            for s, name in rows
         ],
     }
 

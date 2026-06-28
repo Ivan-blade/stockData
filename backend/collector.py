@@ -3,12 +3,12 @@
 from datetime import datetime, date
 from sqlalchemy import text
 from database import engine
-from models import Company, FinancialSummary, FinancialIndicator, DailySnapshot
+from models import Company, FinancialSummary, DailySnapshot, StockList
 import akshare_client as ac
 import akshare as ak
 
-# 采集公司清单（A股用代码，港股用 code+交易所标识）
-TARGET_COMPANIES = [
+# 财务数据采集目标（原 26 只自选股，与全量快照分离）
+FINANCIAL_TARGETS = [
     # A股 — 深圳
     {"code": "002475", "exchange": "SZ", "name": "立讯精密"},
     {"code": "000858", "exchange": "SZ", "name": "五粮液"},
@@ -40,11 +40,73 @@ TARGET_COMPANIES = [
     {"code": "01024", "exchange": "HK", "name": "快手"},
     {"code": "01810", "exchange": "HK", "name": "小米"},
     {"code": "01530", "exchange": "HK", "name": "三生制药"},
-    # 美股（暂不自动采集）
 ]
 
 # A股代码 → 交易所前缀
 EX_PREFIX = {"SZ": "sz", "SH": "sh", "BJ": "bj"}
+
+
+def collect_stock_list(verbose=True):
+    """拉取全量 A 股 + 港股清单写入 stock_list（--list 模式）"""
+    import time as _time
+    now = datetime.now()
+    total = 0
+
+    with engine.connect() as conn:
+        # ── A股 ──
+        if verbose:
+            print("  📋 拉取 A 股清单...", end=" ", flush=True)
+        try:
+            df = ak.stock_info_a_code_name()
+            a_count = 0
+            for _, row in df.iterrows():
+                code = str(row["code"])
+                name = str(row["name"])
+                # 根据代码前缀判定交易所
+                if code.startswith("6") or code.startswith("688"):
+                    ex = "SH"
+                elif code.startswith("0") or code.startswith("3"):
+                    ex = "SZ"
+                elif code.startswith("4") or code.startswith("8"):
+                    ex = "BJ"
+                else:
+                    ex = "SZ"
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, :ex, 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), exchange=VALUES(exchange), updated_at=VALUES(updated_at)"""),
+                    {"code": code, "name": name, "ex": ex, "now": now})
+                a_count += 1
+            conn.commit()
+            total += a_count
+            if verbose:
+                print(f"✅ {a_count} 只")
+        except Exception as e:
+            if verbose:
+                print(f"❌ {e}")
+
+        # ── 港股（单次拉取 get 清单，snapshot 时不用）──
+        if verbose:
+            print("  📋 拉取港股清单...", end=" ", flush=True)
+        try:
+            df = ak.stock_hk_spot_em()
+            hk_count = 0
+            for _, row in df.iterrows():
+                code = str(row["代码"]).zfill(5)
+                name = str(row.get("名称", ""))
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, 'HK', 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
+                    {"code": code, "name": name, "now": now})
+                hk_count += 1
+            conn.commit()
+            total += hk_count
+            if verbose:
+                print(f"✅ {hk_count} 只")
+        except Exception as e:
+            if verbose:
+                print(f"❌ {e}")
+
+    return {"list": total}
 
 
 def upsert_company(db, code, exchange, name):
@@ -101,22 +163,19 @@ def upsert_financial_summary(conn, code, records):
     return count
 
 
-    return count
-
-
 def collect_all(targets=None, verbose=True):
     """
-    全量/增量采集
+    全量/增量采集（财务数据，仅限 FINANCIAL_TARGETS）
     
     Args:
-        targets: 要采集的公司列表，None 则采集全部
+        targets: 要采集的公司列表，None 则采集全部 FINANCIAL_TARGETS
         verbose: 是否打印日志
     
     Returns:
         dict: 采集统计
     """
     if targets is None:
-        targets = TARGET_COMPANIES
+        targets = FINANCIAL_TARGETS
 
     stats = {"companies": 0, "summary": 0}
 
@@ -139,109 +198,188 @@ def collect_all(targets=None, verbose=True):
             code = t["code"]
             exchange = t["exchange"]
 
-            # 财务数据（A、港接口不同）
-        if exchange == "HK":
-            if verbose:
-                print(f"  📊 {code}: 港股（暂只建档，财务接口待接入）")
-        else:
-            # A股：财务摘要
-            if verbose:
-                print(f"  📊 {code}: 财务摘要...", end=" ")
-            records = ac.get_financial_summary(code)
-            if records and "error" not in records[0]:
-                c = upsert_financial_summary(conn, code, records)
-                stats["summary"] += c
+            if exchange == "HK":
                 if verbose:
-                    print(f"{c} 条")
+                    print(f"  📊 {code}: 港股（暂只建档，财务接口待接入）")
             else:
+                # A股：财务摘要
                 if verbose:
-                    print("跳过")
+                    print(f"  📊 {code}: 财务摘要...", end=" ", flush=True)
+                records = ac.get_financial_summary(code)
+                if records and "error" not in records[0]:
+                    c = upsert_financial_summary(conn, code, records)
+                    stats["summary"] += c
+                    if verbose:
+                        print(f"{c} 条")
+                else:
+                    if verbose:
+                        print("跳过")
 
-            conn.commit()
+                conn.commit()
 
     return stats
 
 
-def collect_snapshots(targets=None, verbose=True):
-    """采集每日估值快照（收盘价+PE/PB/市值）"""
-    if targets is None:
-        a_targets = [t for t in TARGET_COMPANIES if t["exchange"] != "HK"]
-        hk_targets = [t for t in TARGET_COMPANIES if t["exchange"] == "HK"]
-    else:
-        a_targets = [t for t in targets if t["exchange"] != "HK"]
-        hk_targets = [t for t in targets if t["exchange"] == "HK"]
+def _sf(v, default=0):
+    """safe_float — NaN/Inf/None → default"""
+    if v is None:
+        return default
+    try:
+        val = float(v)
+        import math
+        if math.isnan(val) or math.isinf(val):
+            return default
+        return val
+    except (ValueError, TypeError):
+        return default
 
-    import akshare as ak
+
+def _si(v, default=0):
+    """safe_int — NaN/Inf/None → default"""
+    return int(_sf(v, default))
+
+
+def collect_snapshots(verbose=True):
+    """采集每日估值快照（全量 A 股 + 港股）"""
+    import time as _time
     now = datetime.now()
     today = now.date()
     total_count = 0
 
-    # ── A股 ──
-    if a_targets:
-        if verbose:
-            print("  📸 拉取A股行情...", end=" ", flush=True)
-        try:
-            df = ak.stock_zh_a_spot_em()
-            a_codes = {t["code"] for t in a_targets}
-            with engine.connect() as conn:
-                for _, row in df.iterrows():
-                    code = str(row["代码"])
-                    if code not in a_codes:
-                        continue
-                    close = float(row.get("最新价", 0))
-                    if close <= 0:
-                        continue
-                    conn.execute(text("""INSERT INTO daily_snapshot 
-                        (code,trade_date,close,volume,amount,turnover,pe_ttm,pb,market_cap,amplitude,change_pct,updated_at)
-                        VALUES (:c,:td,:cl,:vol,:amt,:turn,:pe,:pb,:mcap,:amp,:chg,:now)
-                        ON DUPLICATE KEY UPDATE close=VALUES(close),volume=VALUES(volume),
-                            turnover=VALUES(turnover),pe_ttm=VALUES(pe_ttm),pb=VALUES(pb),
-                            market_cap=VALUES(market_cap),change_pct=VALUES(change_pct),
-                            updated_at=VALUES(updated_at)"""),
-                        {"c":code,"td":today,"cl":close,"vol":int(row.get("成交量",0)),"amt":float(row.get("成交额",0)),
-                         "turn":float(row.get("换手率",0)),"pe":float(row.get("市盈率-动态",0)),
-                         "pb":float(row.get("市净率",0)),"mcap":float(row.get("总市值",0)),
-                         "amp":float(row.get("振幅",0)),"chg":float(row.get("涨跌幅",0)),"now":now})
-                    total_count += 1
-                conn.commit()
-            if verbose:
-                print(f"✅ A股 {total_count} 条")
-        except Exception as e:
-            if verbose:
-                print(f"❌ {e}")
-
-    # ── 港股（逐只拉取，避免 stock_hk_spot_em 多进程不稳定）──
-    if hk_targets:
-        if verbose:
-            print("  📸 拉取港股行情...", end=" ", flush=True)
-        import time as _time
-        hk_count = 0
+    # ── A股：从 stock_zh_a_spot_em() 批量拉取全量 ──
+    if verbose:
+        print("  📸 拉取 A 股全量行情...", end=" ", flush=True)
+    try:
+        df = ak.stock_zh_a_spot_em()
+        a_count = 0
         with engine.connect() as conn:
-            for t in hk_targets:
-                code = t["code"]
+            for _, row in df.iterrows():
+                code = str(row["代码"])
+                close = _sf(row.get("最新价", 0))
+                if close <= 0:
+                    continue
+                conn.execute(text("""INSERT INTO daily_snapshot 
+                    (code,trade_date,close,volume,amount,turnover,pe_ttm,pb,market_cap,amplitude,change_pct,updated_at)
+                    VALUES (:c,:td,:cl,:vol,:amt,:turn,:pe,:pb,:mcap,:amp,:chg,:now)
+                    ON DUPLICATE KEY UPDATE close=VALUES(close),volume=VALUES(volume),
+                        turnover=VALUES(turnover),pe_ttm=VALUES(pe_ttm),pb=VALUES(pb),
+                        market_cap=VALUES(market_cap),change_pct=VALUES(change_pct),
+                        updated_at=VALUES(updated_at)"""),
+                    {"c":code,"td":today,"cl":close,
+                     "vol":_si(row.get("成交量", 0)),
+                     "amt":_sf(row.get("成交额", 0)),
+                     "turn":_sf(row.get("换手率", 0)),
+                     "pe":_sf(row.get("市盈率-动态", 0)),
+                     "pb":_sf(row.get("市净率", 0)),
+                     "mcap":_sf(row.get("总市值", 0)),
+                     "amp":_sf(row.get("振幅", 0)),
+                     "chg":_sf(row.get("涨跌幅", 0)),
+                     "now":now})
+                a_count += 1
+            conn.commit()
+        total_count += a_count
+        if verbose:
+            print(f"✅ {a_count} 条")
+    except Exception as e:
+        if verbose:
+            print(f"❌ {e}")
+
+    # ── 港股：从 stock_list 读全量代码，逐个拉取 ──
+    if verbose:
+        print("  📸 拉取港股全量行情（逐只，间隔 0.3s）...", end=" ", flush=True)
+    try:
+        with engine.connect() as conn:
+            hk_codes = [r[0] for r in conn.execute(
+                text("SELECT code FROM stock_list WHERE exchange = 'HK'")
+            ).fetchall()]
+    except Exception as e:
+        hk_codes = []
+        if verbose:
+            print(f"  ⚠️ 读取 stock_list 失败: {e}")
+
+    if not hk_codes:
+        if verbose:
+            print("（无港股清单，跳过）")
+    else:
+        hk_count = 0
+        hk_total = len(hk_codes)
+        hk_results = []
+
+        def fetch_hk_stock(code):
+            """获取单只港股行情+财务指标"""
+            import math
+            try:
+                # 个股日K 取最新价
+                hist = ak.stock_hk_hist(
+                    symbol=code, period="daily",
+                    start_date=today.isoformat().replace("-", ""),
+                    end_date=today.isoformat().replace("-", ""),
+                )
+                if hist.empty:
+                    try:
+                        hist = ak.stock_hk_hist(
+                            symbol=code, period="daily",
+                            start_date="20200101",
+                            end_date=today.isoformat().replace("-", ""),
+                        )
+                    except Exception:
+                        pass
+                if hist.empty:
+                    return None
+                last = hist.iloc[-1]
+                close = _sf(last.get("收盘", 0))
+                if close <= 0:
+                    return None
+
+                # 财务指标（PE/PB/市值）
                 try:
-                    # 个股日K（取最新一天得收盘价+涨跌幅+成交量）
-                    hist = ak.stock_hk_hist(
-                        symbol=code, period="daily",
-                        start_date=today.isoformat().replace("-", ""),
-                        end_date=today.isoformat().replace("-", ""),
-                    )
-                    if hist.empty:
-                        continue
-                    last = hist.iloc[-1]
-                    close = float(last.get("收盘", 0))
-                    if close <= 0:
-                        continue
-
-                    # 财务指标（PE/PB/市值）
                     fin = ak.stock_hk_financial_indicator_em(symbol=code)
-                    pe = pb = mcap = None
-                    if not fin.empty:
-                        r = fin.iloc[0]
-                        pe = float(r["市盈率"]) if r.get("市盈率") else None
-                        pb = float(r["市净率"]) if r.get("市净率") else None
-                        mcap = float(r["总市值(港元)"]) if r.get("总市值(港元)") else None
+                except Exception:
+                    fin = None
+                pe = pb = mcap = None
+                if fin is not None and hasattr(fin, "empty") and not fin.empty:
+                    r = fin.iloc[0]
+                    if hasattr(r, "get"):
+                        pe = _sf(r.get("市盈率"))
+                        pb = _sf(r.get("市净率"))
+                        mcap = _sf(r.get("总市值(港元)"))
 
+                return {
+                    "code": code,
+                    "close": close,
+                    "volume": int(last.get("成交量", 0)) if not (isinstance(last.get("成交量", 0), float) and math.isnan(last.get("成交量", 0))) else 0,
+                    "change_pct": _sf(last.get("涨跌幅", 0)),
+                    "pe": pe,
+                    "pb": pb,
+                    "mcap": mcap,
+                }
+            except Exception as e:
+                if verbose:
+                    print(f"\n    ⚠️ {code}: {e}")
+                return None
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        hk_total = len(hk_codes)
+        hk_results = []
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(fetch_hk_stock, code): code for code in hk_codes}
+            done = 0
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    hk_results.append(result)
+                done += 1
+                if verbose and done % 100 == 0:
+                    print(f"\n    → {done}/{hk_total} 已完成 {len(hk_results)} 只...", end=" ", flush=True)
+                _time.sleep(0.3)  # 整体限流
+
+        # 批量写入
+        hk_count = len(hk_results)
+        if hk_results:
+            with engine.connect() as conn:
+                for r in hk_results:
+                    total_count += 1
                     conn.execute(text("""INSERT INTO daily_snapshot 
                         (code,trade_date,close,volume,pe_ttm,pb,market_cap,change_pct,updated_at)
                         VALUES (:c,:td,:cl,:vol,:pe,:pb,:mcap,:chg,:now)
@@ -249,19 +387,15 @@ def collect_snapshots(targets=None, verbose=True):
                             pe_ttm=VALUES(pe_ttm),pb=VALUES(pb),
                             market_cap=VALUES(market_cap),change_pct=VALUES(change_pct),
                             updated_at=VALUES(updated_at)"""),
-                        {"c":code,"td":today,"cl":close,
-                         "vol": int(last.get("成交量", 0)),
-                         "chg": float(last.get("涨跌幅", 0)),
-                         "pe": pe, "pb": pb, "mcap": mcap, "now": now})
-                    hk_count += 1
-                    total_count += 1
-                except Exception as e:
-                    if verbose:
-                        print(f"\n    ⚠️ {code}: {e}")
-                _time.sleep(0.3)  # 避免频率限制
+                        {"c": r["code"], "td": today, "cl": r["close"],
+                         "vol": r["volume"],
+                         "chg": r["change_pct"],
+                         "pe": r["pe"], "pb": r["pb"], "mcap": r["mcap"], "now": now})
             conn.commit()
         if verbose:
-            print(f"✅ 港股 {hk_count} 条（含PE/PB/市值）")
+            print(f"✅ 港股 {hk_count}/{hk_total} 条")
+            if hk_count < hk_total:
+                print(f"   ⚠️ 未采集到 {(hk_total - hk_count)} 只（可能是停牌/无数据）")
 
     return {"snapshot": total_count}
 
@@ -346,7 +480,7 @@ def collect_sectors(verbose: bool = True, backfill_months: int = 1) -> dict:
     if verbose:
         print(f"  🧹 清理 60 天前: {stats['cleaned']} 条")
 
-    # ── 检查前一个月数据，缺则补填 ──
+    # ── 检查历史数据完整性 ──
     if verbose:
         print("  🔍 检查历史数据完整性...", end=" ", flush=True)
     try:
@@ -387,7 +521,6 @@ def print_stats(stats, elapsed):
     print(f"✅ 采集完成！用时 {elapsed:.1f}s")
     print(f"   公司建档: {stats['companies']} 家")
     print(f"   财务摘要: {stats['summary']} 条")
-    print(f"   财务指标: {stats['indicators']} 条")
     print(f"{'='*40}")
 
 
@@ -395,17 +528,24 @@ if __name__ == "__main__":
     import sys
     import time
 
-    # 支持参数：--a 只采A股, --hk 只采港股
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
 
-    if mode == "--a":
-        targets = [t for t in TARGET_COMPANIES if t["exchange"] != "HK"]
-        label = "A股"
-    elif mode == "--hk":
-        targets = [t for t in TARGET_COMPANIES if t["exchange"] == "HK"]
-        label = "港股"
+    if mode == "--list":
+        start = time.time()
+        print("🚀 开始采集全量股票清单")
+        print("=" * 40)
+        stats = collect_stock_list(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 股票清单采集完成！用时 {elapsed:.1f}s")
+        print(f"   总计: {stats['list']} 只")
+        print(f"{'='*40}")
+        sys.exit(0)
+
     elif mode == "--snapshot":
         start = time.time()
+        print("🚀 开始全量估值快照采集")
+        print("=" * 40)
         stats = collect_snapshots(verbose=True)
         elapsed = time.time() - start
         print(f"\n{'='*40}")
@@ -413,6 +553,7 @@ if __name__ == "__main__":
         print(f"   行情: {stats['snapshot']} 条")
         print(f"{'='*40}")
         sys.exit(0)
+
     elif mode == "--sector":
         start = time.time()
         stats = collect_sectors(verbose=True)
@@ -423,12 +564,19 @@ if __name__ == "__main__":
         print(f"   清理: {stats['cleaned']} 条  缺天数: {stats.get('missing_days', 0)}")
         print(f"{'='*40}")
         sys.exit(0)
-    else:
-        targets = None
-        label = "全部"
 
-    start = time.time()
-    print(f"🚀 开始采集（{label}）")
-    print("=" * 40)
-    stats = collect_all(targets=targets)
-    print_stats(stats, time.time() - start)
+    elif mode in ("--a", "--hk"):
+        targets = None
+        label = "A股" if mode == "--a" else "港股"
+        start = time.time()
+        print(f"🚀 开始采集财务数据（{label}）")
+        print("=" * 40)
+        stats = collect_all(targets=targets)
+        print_stats(stats, time.time() - start)
+
+    else:
+        start = time.time()
+        print("🚀 开始采集财务数据（全部 FINANCIAL_TARGETS）")
+        print("=" * 40)
+        stats = collect_all(targets=None)
+        print_stats(stats, time.time() - start)

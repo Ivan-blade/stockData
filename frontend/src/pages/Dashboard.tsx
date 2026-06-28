@@ -162,7 +162,7 @@ export default function Dashboard() {
   // 合并快照数据 + 公司名称 + 交易所
   const rawRows = (snap?.items || []).map(item => {
     const company = cache.find(c => c.code === item.code)
-    return { ...item, name: company?.name || '-', exchange: company?.exchange || '-' }
+    return { ...item, name: item.name || company?.name || '-', exchange: company?.exchange || '-' }
   }).filter(r => {
     if (!searchInput) return true
     return r.name.includes(searchInput) || r.code.includes(searchInput)

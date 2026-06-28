@@ -12,6 +12,19 @@ class Exchange(str, enum.Enum):
     US = "US"
 
 
+class StockList(Base):
+    """全量股票清单"""
+    __tablename__ = "stock_list"
+
+    code = Column(String(10), primary_key=True, comment="股票代码")
+    name = Column(String(50), nullable=False, comment="股票名称")
+    exchange = Column(String(5), nullable=False, comment="交易所 SZ/SH/BJ/HK")
+    stock_type = Column(String(10), default="AHK", comment="类型: AHK(股票)/指数/板块")
+    industry = Column(String(50), comment="行业")
+    listing_date = Column(Date, comment="上市日期")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class Company(Base):
     __tablename__ = "company"
 
