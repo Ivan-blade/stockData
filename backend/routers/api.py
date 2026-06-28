@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from database import get_db
-from models import Company, Watchlist, Position
+from models import Company, Watchlist, Position, StockList
 from schemas import (
     CompanyOut, WatchlistOut, WatchlistAdd,
     PositionOut, PositionAdd,
 )
+import time
 import akshare_client as ac
 
 router = APIRouter(prefix="/api", tags=["companies"])
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/api", tags=["companies"])
 def list_companies(
     keyword: str = Query("", description="按名称模糊搜索"),
     page: int = Query(1, ge=1, description="页码"),
-    page_size: int = Query(20, ge=1, le=200, description="每页条数"),
+    page_size: int = Query(20, ge=1, le=500, description="每页条数"),
     exchange: str = Query("", description="SZ/SH/HK/A"),
     db: Session = Depends(get_db),
 ):
