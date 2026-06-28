@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useThemeStore } from '../stores/themeStore'
 import { api } from '../api/client'
 
-interface Props { onSelect: () => void }
+interface Props { onSelect: (code: string) => void }
 
 export default function Companies({ onSelect }: Props) {
   const { theme } = useThemeStore()
@@ -72,7 +72,7 @@ export default function Companies({ onSelect }: Props) {
                   <th className="px-3.5 py-2.5">名称</th>
                   <th className="px-3.5 py-2.5">交易所</th>
                   <th className="px-3.5 py-2.5">行业</th>
-                  <th className="px-3.5 py-2.5">操作</th>
+                  <th className="px-3.5 py-2.5" colSpan={2}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -87,7 +87,14 @@ export default function Companies({ onSelect }: Props) {
                     </td>
                     <td className={`px-3.5 py-2 text-sm ${isDark ? 'text-[#8892a4]' : 'text-gray-500'}`}>{c.industry || '-'}</td>
                     <td className="px-3.5 py-2">
-                      <button onClick={onSelect} className={`px-3 py-1 text-xs rounded-md border cursor-pointer ${isDark ? 'bg-[#1a1d28] border-[#1e2235] text-[#8892a4]' : 'bg-gray-100 border-gray-200 text-gray-500'} hover:opacity-80`}>查看财务</button>
+                      <button onClick={() => onSelect(c.code)} className={`px-2.5 py-1 text-xs rounded-md border cursor-pointer ${isDark ? 'bg-[#1a1d28] border-[#1e2235] text-[#8892a4]' : 'bg-gray-100 border-gray-200 text-gray-500'} hover:opacity-80`}>财务</button>
+                    </td>
+                    <td className="px-3.5 py-2">
+                      <button onClick={async () => {
+                        try {
+                          await fetch(`/api/collect/${c.code}`, {method:'POST'})
+                        } catch {}
+                      }} className={`px-2.5 py-1 text-xs rounded-md border cursor-pointer ${isDark ? 'bg-[#1a1d28] border-[#1e2235] text-amber-400' : 'bg-gray-100 border-gray-200 text-amber-600'} hover:opacity-80`}>采集</button>
                     </td>
                   </tr>
                 ))}

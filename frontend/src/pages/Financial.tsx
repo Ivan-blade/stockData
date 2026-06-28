@@ -10,6 +10,32 @@ const KEY_METRICS = [
   '资产负债率', '毛利率', '销售净利率', '净资产收益率(ROE)',
 ]
 
+// 港股英文指标 → 友好显示名
+const HK_METRIC_NAMES: Record<string, string> = {
+  OPERATE_INCOME: '营业总收入',
+  GROSS_PROFIT: '毛利',
+  HOLDER_PROFIT: '归母净利润',
+  BASIC_EPS: '基本每股收益',
+  BPS: '每股净资产',
+  PER_NETCASH_OPERATE: '每股经营现金流',
+  DEBT_ASSET_RATIO: '资产负债率',
+  GROSS_PROFIT_RATIO: '毛利率',
+  NET_PROFIT_RATIO: '销售净利率',
+  ROE_AVG: '净资产收益率(ROE)',
+  ROE_YEARLY: '净资产收益率(年度)',
+  ROA: '总资产回报率',
+  ROIC_YEARLY: 'ROIC',
+  PER_OI: '每股营业收入',
+  DILUTED_EPS: '稀释每股收益',
+  EPS_TTM: '滚动每股收益',
+  OCF_SALES: '经营现金流/营收',
+  CURRENT_RATIO: '流动比率',
+  TAX_EBT: '有效税率',
+  HOLDER_PROFIT_YOY: '归母净利润同比',
+  OPERATE_INCOME_YOY: '营收同比',
+  GROSS_PROFIT_YOY: '毛利同比',
+}
+
 /** 数值格式化：亿 / 万 / 原值 */
 function fmtVal(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -33,7 +59,7 @@ function samePeriodLastYear(dateStr: string): string | null {
   return `${y}-${parts[1]}-${parts[2]}`
 }
 
-export default function Financial() {
+export default function Financial({ initialCode = '' }: { initialCode?: string }) {
   const { theme } = useThemeStore()
   const [code, setCode] = useState('')
   const [data, setData] = useState<FinancialResponse | null>(null)
@@ -51,7 +77,11 @@ export default function Financial() {
       .then(d => {
         const items = d.items || []
         setStockList(items)
-        if (items.length > 0 && !code) {
+        // 如果有 initialCode，直接加载那只
+        if (initialCode) {
+          setCode(initialCode)
+          fetchFinancial(initialCode)
+        } else if (items.length > 0 && !code) {
           const c = items[0].code
           setCode(c)
           fetchFinancial(c)
@@ -173,6 +203,19 @@ export default function Financial() {
   }, [dates, merged, selectedMetric, isDark])
 
   const currentCompany = stockList.find(c => c.code === code)
+
+  // 动态确定要显示的指标：优先用 KEY_METRICS（中文有值），否则用港股英文名映射
+  const activeMetrics = useMemo(() => {
+    if (!data || !dates.length) return KEY_METRICS
+    const available = Object.keys(merged[dates[0]] || {})
+    // 检查是否有中文指标
+    const hasChinese = available.some(k => KEY_METRICS.includes(k))
+    if (hasChinese) return KEY_METRICS
+    // 港股：用英文名映射
+    return available
+      .filter(k => HK_METRIC_NAMES[k])
+      .sort((a, b) => (HK_METRIC_NAMES[a] || a).localeCompare(HK_METRIC_NAMES[b] || b))
+  }, [data, dates, merged])
   if (!isDark) {
     /* passes through */
   }
@@ -287,7 +330,8 @@ export default function Financial() {
               </thead>
               {/* 表体 */}
               <tbody>
-                {KEY_METRICS.map((metric, ri) => {
+                {activeMetrics.map((metric, ri) => {
+                  const displayName = HK_METRIC_NAMES[metric] || metric
                   const latestVal = merged[dates[0]]?.[metric]
                   const yoy = getYoY(metric, dates[0])
                   const isSelected = selectedMetric === metric
@@ -315,7 +359,7 @@ export default function Financial() {
                       } ${isDark ? 'bg-[#0f1117]' : 'bg-white'}`}
                         style={{ boxShadow: isDark ? '2px 0 4px rgba(0,0,0,0.3)' : '2px 0 4px rgba(0,0,0,0.06)' }}
                       >
-                        {metric}
+                        {displayName}
                         {isSelected && (
                           <span className="ml-1 text-[10px] opacity-60">📈</span>
                         )}
@@ -355,7 +399,7 @@ export default function Financial() {
                 趋势图
               </span>
               <span className={`text-xs font-medium ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
-                {selectedMetric}
+                {HK_METRIC_NAMES[selectedMetric] || selectedMetric}
               </span>
               <span className={`text-[11px] ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>
                 — 点击表格行切换
