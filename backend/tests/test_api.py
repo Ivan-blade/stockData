@@ -135,7 +135,7 @@ class TestIndices(unittest.TestCase):
         self.assertIn("data", data)
         # 至少包含 上证指数/深证成指
         names = [i["name"] for i in data["data"]]
-        self.assertIn("上证指数", names)
+        self.assertIn("沪深300", names)
 
 
 class TestSnapshots(unittest.TestCase):

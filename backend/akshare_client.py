@@ -124,10 +124,12 @@ async def get_indices() -> List[dict]:
     try:
         df = ak.stock_zh_index_spot_em()
         targets = {
-            "上证指数": "sh000001",
-            "深证成指": "sz399001",
-            "创业板指": "sz399006",
-            "科创50": "sh000688",
+            "上证指数": "000001",
+            "沪深300": "000300",
+            "科创50": "000688",
+            "中证500": "000905",
+            "上证50": "000016",
+            "中证全指": "000985",
         }
         results = []
         for name, code in targets.items():
