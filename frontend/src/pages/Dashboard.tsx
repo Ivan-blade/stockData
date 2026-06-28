@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useThemeStore } from '../stores/themeStore'
 import { useCompanyStore } from '../stores/companyStore'
+import ReactECharts from 'echarts-for-react'
 
 export default function Dashboard() {
   const { theme } = useThemeStore()
@@ -8,7 +9,129 @@ export default function Dashboard() {
   const [stats, setStats] = useState({ total: 0, a: 0, hk: 0 })
   const [searchInput, setSearchInput] = useState('')
   const isDark = theme === 'dark'
-  const t = (d:string) => isDark ? d : d.replace('bg-[#0f1117]','bg-white').replace('border-[#1e2235]','border-gray-200').replace('bg-[#1a1d28]','bg-gray-100').replace('text-[#5a6275]','text-gray-400').replace('text-[#8892a4]','text-gray-500').replace('hover:bg-purple-500/5','hover:bg-purple-50/50').replace('text-[#e8eaed]','text-[#1a1d2e]')
+
+  // ── K-line 详情 ──
+  const [klineCode, setKlineCode] = useState('')
+  const [klineName, setKlineName] = useState('')
+  const [klineData, setKlineData] = useState<any[]>([])
+  const [klineLoading, setKlineLoading] = useState(false)
+
+  const openKline = async (code: string, name: string) => {
+    setKlineCode(code)
+    setKlineName(name)
+    setKlineLoading(true)
+
+    // 自动计算近一个月日期
+    const end = new Date()
+    const start = new Date(end)
+    start.setDate(start.getDate() - 35)
+    const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '')
+
+    // 查交易所
+    const company = cache.find(c => c.code === code)
+    const exchange = company?.exchange === 'HK' ? 'HK' : 'SZ'
+
+    try {
+      const r = await fetch(`/api/kline/${code}?exchange=${exchange}&start=${fmt(start)}&end=${fmt(end)}`)
+      if (r.ok) {
+        const d = await r.json()
+        setKlineData(d.data ?? [])
+      }
+    } catch {}
+    setKlineLoading(false)
+  }
+
+  const closeKline = () => {
+    setKlineCode('')
+    setKlineData([])
+  }
+
+  // K-line 图配置
+  const klineOpts = useMemo(() => {
+    if (klineData.length === 0) return null
+
+    // 按日期升序
+    const sorted = [...klineData].sort((a, b) => a['日期'] < b['日期'] ? -1 : 1)
+    const dates = sorted.map(r => r['日期'].slice(5))
+    const ohlc = sorted.map(r => [r['开盘'], r['收盘'], r['最低'], r['最高']])
+    const volumes = sorted.map(r => r['成交量'])
+
+    return {
+      tooltip: {
+        trigger: 'axis' as const,
+        axisPointer: { type: 'cross' as const },
+      },
+      grid: [
+        { left: 60, right: 20, top: 35, height: '55%' },
+        { left: 60, right: 20, top: '72%', height: '18%' },
+      ],
+      xAxis: [
+        {
+          type: 'category' as const,
+          data: dates,
+          axisLabel: { color: isDark ? '#8892a4' : '#6b7280', fontSize: 10, rotate: 30 },
+          axisLine: { lineStyle: { color: isDark ? '#1e2235' : '#e5e7eb' } },
+          gridIndex: 0,
+        },
+        {
+          type: 'category' as const,
+          data: dates,
+          axisLabel: { show: false },
+          axisLine: { show: false },
+          gridIndex: 1,
+        },
+      ],
+      yAxis: [
+        {
+          type: 'value' as const,
+          scale: true,
+          splitNumber: 4,
+          axisLabel: { color: isDark ? '#8892a4' : '#6b7280', fontSize: 10 },
+          splitLine: { lineStyle: { color: isDark ? '#1e2235' : '#e5e7eb', type: 'dashed' as const } },
+          gridIndex: 0,
+        },
+        {
+          type: 'value' as const,
+          scale: true,
+          splitNumber: 3,
+          axisLabel: { color: isDark ? '#8892a4' : '#6b7280', fontSize: 9 },
+          splitLine: { show: false },
+          gridIndex: 1,
+        },
+      ],
+      series: [
+        {
+          type: 'candlestick' as const,
+          name: 'K线',
+          data: ohlc,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          itemStyle: {
+            color: '#ef5350',
+            color0: '#26a69a',
+            borderColor: '#ef5350',
+            borderColor0: '#26a69a',
+          },
+        },
+        {
+          type: 'bar' as const,
+          name: '成交量',
+          data: volumes,
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          itemStyle: {
+            color: (params: any) => {
+              const idx = params.dataIndex
+              const item = sorted[idx]
+              return item && item['收盘'] >= item['开盘'] ? '#26a69a' : '#ef5350'
+            },
+          },
+        },
+      ],
+    }
+  }, [klineData, isDark])
+
+  const t = (d: string) => isDark ? d : d.replace('bg-[#0f1117]','bg-white').replace('border-[#1e2235]','border-gray-200').replace('bg-[#1a1d28]','bg-gray-100').replace('text-[#5a6275]','text-gray-400').replace('text-[#8892a4]','text-gray-500').replace('hover:bg-purple-500/5','hover:bg-purple-50/50').replace('text-[#e8eaed]','text-[#1a1d2e]')
 
   useEffect(() => {
     useCompanyStore.getState().loadCache().then(all => {
@@ -51,7 +174,7 @@ export default function Dashboard() {
   const toggleSort = (key: string) => {
     if (sortKey === key) {
       if (sortAsc) setSortAsc(false)
-      else setSortKey('')  // 第三次点击取消排序
+      else setSortKey('')
     } else { setSortKey(key); setSortAsc(true) }
   }
   const sortIcon = (key: string) => {
@@ -116,7 +239,11 @@ export default function Dashboard() {
           </thead>
           <tbody>
             {pagedRows.map(r => (
-              <tr key={r.code} className={`border-b ${t('border-[#1e2235]/50 hover:bg-purple-500/5')}`}>
+              <tr key={r.code}
+                onClick={() => openKline(r.code, r.name)}
+                className={`border-b cursor-pointer transition-colors ${t('border-[#1e2235]/50 hover:bg-purple-500/5')} ${
+                  klineCode === r.code ? (isDark ? 'bg-purple-500/10' : 'bg-purple-50') : ''
+                }`}>
                 <td className={`px-3.5 py-2 text-xs font-mono ${t('text-[#5a6275]')}`}>{r.code}</td>
                 <td className="px-3.5 py-2 text-sm font-medium">{r.name}</td>
                 <td className={`px-3.5 py-2 text-sm font-mono text-right`}>{r.close?.toFixed(2)}</td>
@@ -150,6 +277,46 @@ export default function Dashboard() {
           <button disabled={page>=totalPages} onClick={()=>setPage(page+1)} className={`px-3 py-1 text-xs rounded-md border cursor-pointer disabled:opacity-30 ${t('bg-[#1a1d28] border-[#1e2235] text-[#8892a4]')}`}>下一页</button>
         </div>
       </div>
+
+      {/* ── K-line 模态窗 ── */}
+      {klineCode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={closeKline}>
+          <div className={`w-[700px] max-w-[90vw] max-h-[85vh] rounded-xl border shadow-2xl overflow-hidden ${
+            isDark ? 'bg-[#0f1117] border-[#1e2235]' : 'bg-white border-gray-200'
+          }`} onClick={e => e.stopPropagation()}>
+            {/* 标题栏 */}
+            <div className={`flex items-center justify-between px-5 py-3 border-b ${
+              isDark ? 'border-[#1e2235]' : 'border-gray-200'
+            }`}>
+              <div>
+                <span className="font-semibold text-base">{klineName}</span>
+                <span className={`ml-2 text-xs font-mono ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>{klineCode}</span>
+              </div>
+              <button onClick={closeKline}
+                className={`text-lg leading-none px-2 py-1 rounded hover:bg-opacity-20 ${
+                  isDark ? 'hover:bg-white/10 text-[#8892a4]' : 'hover:bg-black/5 text-gray-400'
+                }`}>✕</button>
+            </div>
+            {/* 图表 */}
+            <div className="p-4">
+              {klineLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="w-8 h-8 border-3 border-t-amber-400 rounded-full animate-spin"
+                    style={{ borderColor: isDark ? '#1e2235' : '#d1d5db', borderTopColor: '#f5c842' }}
+                  />
+                </div>
+              ) : klineOpts ? (
+                <ReactECharts option={klineOpts} style={{ height: 420 }} />
+              ) : (
+                <div className={`text-center py-16 text-sm ${isDark ? 'text-[#5a6275]' : 'text-gray-400'}`}>
+                  暂无 K 线数据
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
