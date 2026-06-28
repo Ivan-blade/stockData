@@ -350,7 +350,7 @@ export default function Financial({ initialCode = '' }: { initialCode?: string }
                 {activeMetrics.map((metric, ri) => {
                   const displayName = HK_METRIC_NAMES[metric] || metric
                   const latestVal = merged[dates[0]]?.[metric]
-                  const yoy = getYoY(metric, dates[0])
+                  const yoy = dates.length ? getYoY(metric, dates[0]) : null
                   const isSelected = selectedMetric === metric
                   const rowBg = isSelected
                     ? isDark ? 'bg-amber-500/8' : 'bg-amber-50'
