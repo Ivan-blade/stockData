@@ -9,7 +9,10 @@
 - [功能](#-功能)
 - [API 接口](#-api-接口)
 - [数据采集](#-数据采集)
+- [规划](#-规划)
+- [变更日志](#-变更日志)
 - [项目结构](#-项目结构)
+- [测试](#-测试)
 - [技术栈](#-技术栈)
 
 ---
@@ -29,19 +32,35 @@ mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS stock_data DEFAULT CHARACTER 
 cd backend
 pip install akshare pandas sqlalchemy pymysql python-dotenv pydantic fastapi uvicorn httpx
 
-# 建表 + 首次全量采集
-PYTHONPATH=. python3 collector.py
+# 首次：全量股票清单（A股 5,528 + 港股 4,689）
+PYTHONPATH=. python3 collector.py --list
 
-# 采集估值快照（收盘价 + PE/PB/市值）
+# 每日：全量行情快照（推荐凌晨跑）
 PYTHONPATH=. python3 collector.py --snapshot
+
+# 板块数据
+PYTHONPATH=. python3 collector.py --sector
+
+# 首次：A 股全量财务（5,516 只，约 1 小时）
+PYTHONPATH=. python3 collector.py --a-finance
+
+# 首次：港股全量财务（2,644 家，约 6 分钟）
+PYTHONPATH=. python3 collector.py --hk-finance
+
+# 首次：港股季度利润表（2,644 家，约 30 分钟）
+PYTHONPATH=. python3 collector.py --hk-quarterly
+
+# 后续定时任务由 APScheduler 自动执行，无需手动触发
 ```
+
+详细采集说明见 [`COLLECTION.md`](COLLECTION.md)。
 
 ### 3. 后端 API
 
 ```bash
 cd backend
-API_PORT=8900 PYTHONPATH=. python3 main.py
-# → http://localhost:8900
+API_PORT=8899 PYTHONPATH=. python3 main.py
+# → http://localhost:8899
 ```
 
 ### 4. 前端
@@ -50,7 +69,7 @@ API_PORT=8900 PYTHONPATH=. python3 main.py
 cd frontend
 npm install
 npm run dev
-# → http://localhost:5173（自动代理 /api 到 8900）
+# → http://localhost:5173（自动代理 /api 到 8899）
 ```
 
 ---
@@ -138,7 +157,7 @@ npm run dev
 
 ## 📡 API 接口
 
-所有接口位于 `http://localhost:8900/api`。FastAPI 自动生成文档：`http://localhost:8900/docs`
+所有接口位于 `http://localhost:8899/api`。FastAPI 自动生成文档：`http://localhost:8899/docs`
 
 | 端点 | 方法 | 说明 |
 |------|:----:|------|
@@ -264,6 +283,14 @@ stockData/
 功能规划、待办项详见：
 
 ➡️ [`TODO.md`](TODO.md)
+
+---
+
+## 📜 变更日志
+
+按日期归档的变更记录详见：
+
+➡️ [`changelog/`](changelog/)
 
 ---
 
