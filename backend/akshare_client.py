@@ -2,8 +2,28 @@
 
 import akshare as ak
 import pandas as pd
+import time
 from typing import Optional, List, Dict
 from datetime import datetime, date
+
+
+# 简单 TTL 缓存
+_cache: dict = {}
+_cache_ttl = 30  # 秒
+
+
+def _cached(key: str, ttl: int = _cache_ttl):
+    """带 TTL 的缓存装饰器"""
+    def deco(fn):
+        def wrapper(*a, **kw):
+            now = time.time()
+            if key in _cache and now - _cache[key]["ts"] < ttl:
+                return _cache[key]["val"]
+            val = fn(*a, **kw)
+            _cache[key] = {"val": val, "ts": now}
+            return val
+        return wrapper
+    return deco
 
 
 def get_company_profile(code: str) -> dict:
@@ -120,7 +140,11 @@ async def get_realtime_quote(codes: List[str]) -> List[dict]:
 
 
 async def get_indices() -> List[dict]:
-    """获取大盘指数行情"""
+    """获取大盘指数行情（缓存 30 秒）"""
+    now = time.time()
+    if hasattr(get_indices, "_cache") and now - get_indices._cache["ts"] < 30:
+        return get_indices._cache["val"]
+
     try:
         df = ak.stock_zh_index_spot_em()
         targets = {
@@ -142,6 +166,7 @@ async def get_indices() -> List[dict]:
                     "change": float(r.get("涨跌额", 0)),
                     "change_pct": float(r.get("涨跌幅", 0)),
                 })
+        get_indices._cache = {"val": results, "ts": now}
         return results
     except Exception as e:
         return [{"error": str(e)}]
