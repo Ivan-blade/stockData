@@ -88,7 +88,18 @@ export default function Financial({ initialCode = '' }: { initialCode?: string }
         }
       })
       .catch(() => {})
-  }, [showHK])
+  }, [showHK]) // eslint-disable-line
+
+  // 当 initialCode 变化时（从公司库跳转），加载对应股票
+  useEffect(() => {
+    if (initialCode) {
+      setCode(initialCode)
+      fetchFinancial(initialCode)
+      // 自动切换到对应交易所
+      const isHK = stockList.some(s => s.code === initialCode && s.exchange === 'HK')
+      if (isHK) setShowHK(true)
+    }
+  }, [initialCode])
 
   const fetchFinancial = async (c: string) => {
     setLoading(true)
