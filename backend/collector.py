@@ -138,36 +138,42 @@ def collect_stock_list(verbose=True):
 
 
 def refresh_stock_list(verbose=True):
-    """刷新全量股票清单（先获取后删除，避免网络失败丢数据）
+    """刷新全量股票清单（仅 upsert，不删除）
 
-    - A股：直接全量更新
-    - 港股：删除旧数据，用 get_hk_stock_codes 重写（仅保留真实股票）
-    - 美股：删除旧数据，用 get_us_stock_codes 重写
+    所有交易所都通过 INSERT...ON DUPLICATE KEY UPDATE 更新：
+    - 新增的代码自动入库
+    - 已有的代码覆盖名称/交易所
+    - 不删除任何旧数据（退市股留着不影响，历史快照可能引用）
+    
+    港股通过 get_hk_stock_codes 自动过滤掉衍生品/ETF/债券。
     """
     import time as _time
     now = datetime.now()
 
     if verbose:
-        print("🚀 刷新股票清单...", flush=True)
+        print("🚀 刷新股票清单（仅更新，不删除）...", flush=True)
 
-    # ── 先获取所有新数据，成功后再操作数据库 ──
     total_a = 0
     total_hk = 0
     total_us = 0
     errors = []
 
     # A股
-    a_stocks = []
     if verbose:
         print("  📋 拉取 A 股清单...", end=" ", flush=True)
     try:
         df = ak.stock_info_a_code_name()
-        for _, row in df.iterrows():
-            code = str(row["code"])
-            name = str(row["name"])
-            ex = "SH" if code.startswith(("6", "688")) else "SZ" if code.startswith(("0", "3")) else "BJ" if code.startswith(("4", "8")) else "SZ"
-            a_stocks.append((code, name, ex))
-        total_a = len(a_stocks)
+        with engine.connect() as conn:
+            for _, row in df.iterrows():
+                code = str(row["code"])
+                name = str(row["name"])
+                ex = "SH" if code.startswith(("6", "688")) else "SZ" if code.startswith(("0", "3")) else "BJ" if code.startswith(("4", "8")) else "SZ"
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, :ex, 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), exchange=VALUES(exchange), updated_at=VALUES(updated_at)"""),
+                    {"code": code, "name": name, "ex": ex, "now": now})
+            conn.commit()
+        total_a = len(df)
         if verbose:
             print(f"✅ {total_a} 只")
     except Exception as e:
@@ -176,26 +182,38 @@ def refresh_stock_list(verbose=True):
             print(f"❌ {e}")
 
     # 港股（过滤后的）
-    hk_stocks = []
     if verbose:
         print("  📋 拉取港股清单（仅真实股票）...", flush=True)
     try:
         hk_stocks, _ = get_hk_stock_codes(verbose=verbose)
         total_hk = len(hk_stocks)
+        with engine.connect() as conn:
+            for s in hk_stocks:
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, 'HK', 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
+                    {"code": s["code"], "name": s["name"], "now": now})
+            conn.commit()
         if verbose:
-            print(f"    ✅ {total_hk} 只")
+            print(f"    ✅ {total_hk} 只真实股票")
     except Exception as e:
         errors.append(f"港股: {e}")
         if verbose:
             print(f"    ❌ {e}")
 
     # 美股
-    us_stocks = []
     if verbose:
         print("  📋 拉取美股清单...", flush=True)
     try:
         us_stocks = get_us_stock_codes(verbose=verbose)
         total_us = len(us_stocks)
+        with engine.connect() as conn:
+            for s in us_stocks:
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, 'US', 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
+                    {"code": s["code"], "name": s["name"], "now": now})
+            conn.commit()
         if verbose:
             print(f"    ✅ {total_us} 只")
     except Exception as e:
@@ -203,52 +221,12 @@ def refresh_stock_list(verbose=True):
         if verbose:
             print(f"    ❌ {e}")
 
-    # ── 全部获取成功后再写数据库（事务性）──
     if verbose:
-        print("  💾 写入数据库...", flush=True)
-
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            # 清理旧数据
-            conn.execute(text("DELETE FROM stock_list"))
-
-            # A股
-            for code, name, ex in a_stocks:
-                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
-                    VALUES (:code, :name, :ex, 'AHK', :now)
-                    ON DUPLICATE KEY UPDATE name=VALUES(name), exchange=VALUES(exchange), updated_at=VALUES(updated_at)"""),
-                    {"code": code, "name": name, "ex": ex, "now": now})
-
-            # 港股
-            for s in hk_stocks:
-                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
-                    VALUES (:code, :name, 'HK', 'AHK', :now)
-                    ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
-                    {"code": s["code"], "name": s["name"], "now": now})
-
-            # 美股
-            for s in us_stocks:
-                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
-                    VALUES (:code, :name, 'US', 'AHK', :now)
-                    ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
-                    {"code": s["code"], "name": s["name"], "now": now})
-
-            conn.commit()
-            if verbose:
-                print(f"    ✅ A{total_a} + HK{total_hk} + US{total_us} = {total_a+total_hk+total_us} 只")
-
-        except Exception as e:
-            trans.rollback()
-            errors.append(f"写入失败(已回滚): {e}")
-            if verbose:
-                print(f"    ❌ 写入失败，已回滚: {e}")
-
-    if errors:
-        if verbose:
-            print(f"  ⚠️ {len(errors)} 个错误:")
-            for e in errors:
-                print(f"    • {e}")
+        print(f"  📊 A{total_a} + HK{total_hk} + US{total_us} = {total_a+total_hk+total_us} 只（仅新增/更新，未删除）")
+    if errors and verbose:
+        print(f"  ⚠️ 部分获取失败:")
+        for e in errors:
+            print(f"    • {e}")
 
     return {"a": total_a, "hk": total_hk, "us": total_us, "total": total_a + total_hk + total_us, "errors": errors}
 
