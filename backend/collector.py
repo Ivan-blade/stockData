@@ -4,6 +4,7 @@ from datetime import datetime, date
 from sqlalchemy import text
 from database import engine
 from models import Company, FinancialSummary, DailySnapshot, StockList
+import pandas as pd
 import akshare_client as ac
 import akshare as ak
 
@@ -45,17 +46,35 @@ FINANCIAL_TARGETS = [
 # A股代码 → 交易所前缀
 EX_PREFIX = {"SZ": "sz", "SH": "sh", "BJ": "bj"}
 
-# 港股黑名单前缀（ETF/REITs/衍生品，无需请求即可跳过）
-BLACKLIST_PREFIXES = ('02', '08')
+# 港股黑名单前缀（债券/票据，无需请求即可跳过）
+# 05xx=公司债/票据/结构化—99% 无财务摘要数据
+# 02xx=窝轮牛熊—但 020xx 含大量正常股票（如 02020 安踏），去掉
+# 08xx=含 GEM 股（如 08607 久融控股），有财务数据，去掉
+BLACKLIST_PREFIXES = ('05',)
 
 # 港股衍生品/ETF 名称关键词
 DERIVATIVE_KEYWORDS = ["ETF", "REIT", "CBBC", "WARRANT", "INLINE", "BULL", "BEAR",
                         "XIU", "FXI", "EEM", "身份", "期货", "期权", "债券",
-                        "INVESCO", "ISHARES", "ABF", "TRACKER"]
+                        "INVESCO", "ISHARES", "ABF", "TRACKER",
+                        # 杠杆/反向 ETF
+                        "一倍做多", "一倍做空", "两倍看多", "两倍看空",
+                        "两倍做多", "两倍做空", "一倍看空", "一倍看多",
+                        # 备兑权证
+                        "备兑",
+                        # 债券/债务相关
+                        "BOND", "NOTES", "DEBT",
+                        # ETF 产品名特征
+                        "AGX", "GX",
+                        # 特殊结构
+                        "STOCK"]
 
 
 def collect_stock_list(verbose=True):
-    """拉取全量 A 股 + 港股清单写入 stock_list（--list 模式）"""
+    """拉取全量 A 股 + 港股清单写入 stock_list（--list 模式）
+    
+    A 股：全量股票（ak.stock_info_a_code_name）
+    港股：仅保留真实股票（通过 get_hk_stock_codes 过滤衍生品/ETF/债券）
+    """
     import time as _time
     now = datetime.now()
     total = 0
@@ -92,29 +111,96 @@ def collect_stock_list(verbose=True):
             if verbose:
                 print(f"❌ {e}")
 
-        # ── 港股（单次拉取 get 清单，snapshot 时不用）──
+        # ── 港股（仅保留真实股票，过滤衍生品/ETF/债券）──
         if verbose:
-            print("  📋 拉取港股清单...", end=" ", flush=True)
+            print("  📋 拉取港股清单（仅真实股票）...", flush=True)
         try:
-            df = ak.stock_hk_spot_em()
+            stocks, _ = get_hk_stock_codes(verbose=verbose)
             hk_count = 0
-            for _, row in df.iterrows():
-                code = str(row["代码"]).zfill(5)
-                name = str(row.get("名称", ""))
+            for s in stocks:
                 conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
                     VALUES (:code, :name, 'HK', 'AHK', :now)
                     ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
-                    {"code": code, "name": name, "now": now})
+                    {"code": s["code"], "name": s["name"], "now": now})
                 hk_count += 1
             conn.commit()
             total += hk_count
             if verbose:
-                print(f"✅ {hk_count} 只")
+                print(f"    ✅ {hk_count} 只真实股票")
         except Exception as e:
             if verbose:
-                print(f"❌ {e}")
+                print(f"    ❌ {e}")
 
     return {"list": total}
+
+
+def refresh_stock_list(verbose=True):
+    """刷新全量股票清单（删除旧数据后重新入库）
+
+    - A股：直接全量更新
+    - 港股：删除旧数据，用 get_hk_stock_codes 重写（仅保留真实股票）
+    """
+    import time as _time
+    now = datetime.now()
+
+    if verbose:
+        print("🚀 刷新股票清单...", flush=True)
+
+    # ── 港股：先清理旧数据 ──
+    if verbose:
+        print("  🗑️ 清理旧港股数据...", end=" ", flush=True)
+    with engine.connect() as conn:
+        r = conn.execute(text("DELETE FROM stock_list WHERE exchange = 'HK'"))
+        conn.commit()
+    if verbose:
+        print(f"✅ 已删除第{r.rowcount}行" if r and r.rowcount else "✅")
+
+    # ── 重新拉取 ──
+    total_a = 0
+    total_hk = 0
+
+    # A股
+    if verbose:
+        print("  📋 拉取 A 股清单...", end=" ", flush=True)
+    try:
+        df = ak.stock_info_a_code_name()
+        with engine.connect() as conn:
+            for _, row in df.iterrows():
+                code = str(row["code"])
+                name = str(row["name"])
+                ex = "SH" if code.startswith(("6", "688")) else "SZ" if code.startswith(("0", "3")) else "BJ" if code.startswith(("4", "8")) else "SZ"
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, :ex, 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), exchange=VALUES(exchange), updated_at=VALUES(updated_at)"""),
+                    {"code": code, "name": name, "ex": ex, "now": now})
+            conn.commit()
+        total_a = len(df)
+        if verbose:
+            print(f"✅ {total_a} 只")
+    except Exception as e:
+        if verbose:
+            print(f"❌ {e}")
+
+    # 港股（过滤后的）
+    if verbose:
+        print("  📋 拉取港股清单（仅真实股票）...", flush=True)
+    try:
+        stocks, _ = get_hk_stock_codes(verbose=verbose)
+        with engine.connect() as conn:
+            for s in stocks:
+                conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                    VALUES (:code, :name, 'HK', 'AHK', :now)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
+                    {"code": s["code"], "name": s["name"], "now": now})
+            conn.commit()
+        total_hk = len(stocks)
+        if verbose:
+            print(f"    ✅ {total_hk} 只真实股票")
+    except Exception as e:
+        if verbose:
+            print(f"    ❌ {e}")
+
+    return {"a": total_a, "hk": total_hk, "total": total_a + total_hk}
 
 
 def upsert_company(db, code, exchange, name):
@@ -450,6 +536,135 @@ def collect_snapshots(verbose=True):
     return {"snapshot": total_count}
 
 
+# ============================================================
+# 港股非股票代码黑名单（API 确认无财务数据的品种）
+# ============================================================
+# 05xx = 企业债券/票据（100% 无数据）
+# 40xx = 企业债券/票据（100% 无数据）
+HK_BOND_PREFIXES = ('05', '40')
+
+# 已知无财务数据的单只代码（API 确认返回 NoneType）
+HK_NO_DATA_CODES = {
+    # 03xx - ETF/ETP
+    '03001', '03003', '03004',  # PP中地美债, 南方明晟A50, 南方东英越南30
+    # 04xx - 债券
+    '04018', '04024', '04030',
+    # 06xx - 债券
+    '06000', '06001', '06002',
+    # 07xx - 杠杆/反向 ETF
+    '07200', '07226', '07230',
+    # 09xx - USD ETF
+    '09001', '09008', '09009',
+    # 82xx-89xx - RMB ETF/债券
+    '82800', '82805', '82817',
+    '83001', '83005', '83010',
+    '84404', '84410', '84415',
+    '85000', '85001', '85002',
+    '86019', '86022', '86605',
+    '87001',                       # 汇贤产业信托 (REIT)
+    '89002', '89003', '89005',
+    # 01xx - 结构化产品
+    '01015', '01016',              # STOCK1015, STOCK1016
+    # 00xx - 暂停上市/无数据
+    '00091',                       # 金禧国际控股
+}
+
+
+def get_hk_stock_codes(verbose=False):
+    """获取港股中真正的股票代码列表
+
+    1. 从东方财富拉取全量港股行情（stock_hk_spot_em）
+    2. 过滤停牌品种（最新价 <= 0）
+    3. 过滤已知债券前缀（05xx, 40xx）
+    4. 过滤已知无数据的单只代码
+    5. 过滤衍生品/ETF 名称关键词
+    6. 智能名称过滤（债券代码名称模式）
+
+    Returns:
+        list[dict]: [{"code": "00700", "name": "腾讯控股", ...}, ...]
+    """
+    import time as _time
+
+    df_spot = ak.stock_hk_spot_em()
+    if verbose:
+        print(f"    → 行情列表 {len(df_spot)} 只", flush=True)
+
+    result = []
+    stats = {"total": 0, "stoped": 0, "bond_prefix": 0, "known_nodata": 0,
+             "keyword": 0, "smart": 0, "valid": 0}
+
+    for _, row in df_spot.iterrows():
+        code = str(row["代码"]).zfill(5)
+        name = str(row.get("名称", ""))
+        close = _sf(row.get("最新价", 0))
+        stats["total"] += 1
+
+        # 1. 停牌过滤
+        if close is None or close <= 0:
+            stats["stoped"] += 1
+            continue
+
+        # 2. 债券前缀过滤（100% 无数据）
+        if code.startswith(HK_BOND_PREFIXES):
+            stats["bond_prefix"] += 1
+            continue
+
+        # 3. 已知无数据单只代码
+        if code in HK_NO_DATA_CODES:
+            stats["known_nodata"] += 1
+            continue
+
+        # 4. 衍生品/ETF 名称关键词
+        name_u = name.upper()
+        skip_keywords = DERIVATIVE_KEYWORDS
+        if any(kw in name_u or kw in name for kw in skip_keywords):
+            stats["keyword"] += 1
+            continue
+
+        # 5. 智能名称过滤
+        if not _is_likely_stock(name, name_u):
+            stats["smart"] += 1
+            continue
+
+        result.append({"code": code, "name": name, "close": close})
+        stats["valid"] += 1
+
+    if verbose:
+        print(f"    → 有效 {stats['valid']} 只"
+              f"（停牌{stats['stoped']}，债券前缀{stats['bond_prefix']}，"
+              f"已知无数据{stats['known_nodata']}，"
+              f"关键词{stats['keyword']}，智能过滤{stats['smart']}）", flush=True)
+
+    return result, stats
+
+
+def _is_likely_stock(name, name_u):
+    """智能判断名称是否像真正的股票（而非债券/结构化产品）
+
+    Returns:
+        True 如果大概率是正股，False 如果像债券/结构化产品
+    """
+    import re
+
+    if not name:
+        return True  # 没有名字不好判断，放行
+
+    # 规则1：名字全是 ASCII（无中文）且长度 < 6 且包含非字母字符 → 很可能是债券
+    if all(ord(c) < 128 for c in name):
+        if len(name) < 6 and not name.isalpha():
+            return False
+
+    # 规则2：名字包含 "N" + 2位数字（债券到期标注）→ 债券
+    if re.search(r'N\d{2}\b', name_u):
+        return False
+
+    # 规则3：名字包含 "B" + 2位数字（债券到期标注）→ 债券
+    if re.search(r'(?<![A-Z])B\d{2}\b', name_u):
+        return False
+
+    return True
+
+
 def collect_hk_finance(verbose=True):
     """采集港股财务数据（全量活跃股）
 
@@ -462,46 +677,48 @@ def collect_hk_finance(verbose=True):
     import time as _time
     now = datetime.now()
     total_count = 0
-    skipped = 0
 
     if verbose:
         print("  📊 港股全量财务数据采集...", flush=True)
 
-    # 先拿全量行情列表（用于过滤停牌+衍生品）
+    # 使用共享函数获取真正的股票代码列表
     try:
-        df_spot = ak.stock_hk_spot_em()
-        if verbose:
-            print(f"    → 行情列表 {len(df_spot)} 只", flush=True)
+        stocks, stats = get_hk_stock_codes(verbose=verbose)
     except Exception as e:
         if verbose:
-            print(f"    ❌ 行情列表获取失败: {e}", flush=True)
+            print(f"    ❌ 获取港股代码列表失败: {e}", flush=True)
         return 0
 
-    valid_codes = []
-    rejected_prefix = 0
-    for _, row in df_spot.iterrows():
-        code = str(row["代码"]).zfill(5)
-        name = str(row.get("名称", ""))
-        close = _sf(row.get("最新价", 0))
-        if close is None or close <= 0:
-            continue
-        # 跳过黑名单前缀（ETF/REITs 等）
-        if code.startswith(BLACKLIST_PREFIXES):
-            rejected_prefix += 1
-            continue
-        # 跳过衍生品/ETF（名称关键词）
-        name_u = name.upper()
-        if any(kw in name_u or kw in name for kw in DERIVATIVE_KEYWORDS):
-            rejected_prefix += 1
-            continue
-        valid_codes.append(code)
-
-    if verbose:
-        print(f"    → 有效 {len(valid_codes)} 只（跳过 {rejected_prefix} 只）", flush=True)
+    valid_codes = [s["code"] for s in stocks]
 
     if not valid_codes:
         if verbose:
             print("    （无有效数据，跳过）")
+        return 0
+
+    # 增量模式下跳过近期已更新的代码
+    try:
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(days=60)
+        with engine.connect() as conn:
+            recent = set(r[0] for r in conn.execute(text(
+                "SELECT DISTINCT fs.code FROM financial_summary fs "
+                "JOIN stock_list sl ON fs.code = sl.code "
+                "WHERE sl.exchange = 'HK' AND fs.updated_at >= :cutoff"
+            ), {"cutoff": cutoff}).fetchall())
+        if verbose:
+            print(f"    → 最近60天内更新: {len(recent)} 只（跳过）", flush=True)
+        old_but_missing = [c for c in valid_codes if c not in recent]
+        if verbose:
+            print(f"    → 还需采集: {len(old_but_missing)} 只（新+60天以上未更新）", flush=True)
+        valid_codes = old_but_missing
+    except Exception as e:
+        if verbose:
+            print(f"    ⚠️ 查已有数据失败（全量模式继续）: {e}", flush=True)
+
+    if not valid_codes:
+        if verbose:
+            print("    ✅ 全部已完成，无需采集")
         return 0
 
     # 分批采集财务指标
@@ -517,23 +734,28 @@ def collect_hk_finance(verbose=True):
                     df = ak.stock_financial_hk_analysis_indicator_em(symbol=code)
                     if df is None or df.empty:
                         continue
-                    # df columns: 报告期, 指标名称, 指标值
-                    # 标准格式：第一列=日期，其他列=指标，有一行指标名
-                    # 实际数据结构：
-                    #   报告期 | 营业总收入 | 毛利 | 归母净利润 | ...
-                    # 需要找出数值列
+                    # HK 财务数据列结构: SECUCODE, SECURITY_CODE, SECURITY_NAME_ABBR,
+                    # ORG_CODE, REPORT_DATE, DATE_TYPE_CODE, 然后是指标列
+                    # 需要跳过非指标列
+                    skip_cols = {'SECUCODE', 'SECURITY_CODE', 'SECURITY_NAME_ABBR',
+                                 'ORG_CODE', 'DATE_TYPE_CODE', 'START_DATE',
+                                 'FISCAL_YEAR', 'CURRENCY', 'IS_CNY_CODE'}
+                    indicator_cols = [c for c in df.columns
+                                      if c not in skip_cols and c != 'REPORT_DATE']
                     for _, row in df.iterrows():
-                        report_date_raw = row.iloc[0]
+                        report_date_raw = row.get('REPORT_DATE')
+                        if pd.isna(report_date_raw):
+                            continue
+                        rd_str = str(report_date_raw)[:10]
                         try:
-                            rd = datetime.strptime(str(report_date_raw)[:10], "%Y-%m-%d").date()
+                            rd = datetime.strptime(rd_str, "%Y-%m-%d").date()
                         except (ValueError, TypeError):
                             try:
-                                rd = datetime.strptime(str(report_date_raw)[:10], "%Y-%m-%d").date()
+                                rd = datetime.strptime(rd_str, "%Y-%m-%d").date()
                             except (ValueError, TypeError):
                                 continue
-                        for col_idx in range(1, len(df.columns)):
-                            indicator = df.columns[col_idx]
-                            val = row.iloc[col_idx]
+                        for indicator in indicator_cols:
+                            val = row.get(indicator)
                             if val is not None:
                                 try:
                                     numeric = float(val)
@@ -552,7 +774,7 @@ def collect_hk_finance(verbose=True):
                     conn.commit()
 
                     if verbose:
-                        print(f"    ✅ {code}: {df.shape[0]} 期", flush=True)
+                        print(f"    ✅ {code}: {df.shape[0]} 期, {total_count} 条", flush=True)
 
                 except Exception as e:
                     if verbose:
@@ -804,30 +1026,38 @@ def collect_a_finance(verbose=True):
                 return code, 0, None
             # df columns: 选项, 指标, YYYYMMDD, YYYYMMDD, ...
             df_idx = df.set_index(["选项", "指标"])
-            count = 0
+            # 批量收集所有 INSERT 值，减少 DB 往返
+            rows = []
+            for col in df_idx.columns:
+                try:
+                    rd = datetime.strptime(col, "%Y%m%d").date()
+                except:
+                    continue
+                for idx in df_idx.index:
+                    val = df_idx.loc[idx, col]
+                    if pd.notna(val):
+                        try:
+                            numeric = float(val)
+                            if math.isnan(numeric) or math.isinf(numeric):
+                                continue
+                            rows.append({
+                                'code': code, 'rd': rd,
+                                'ind': idx[1], 'val': numeric, 'now': now
+                            })
+                        except:
+                            pass
+            if not rows:
+                return code, 0, None
             with engine.connect() as conn:
-                for col in df_idx.columns:
-                    try:
-                        rd = datetime.strptime(col, "%Y%m%d").date()
-                    except:
-                        continue
-                    for idx in df_idx.index:
-                        val = df_idx.loc[idx, col]
-                        if pd.notna(val):
-                            try:
-                                numeric = float(val)
-                                if math.isnan(numeric) or math.isinf(numeric):
-                                    continue
-                                conn.execute(text("""INSERT INTO financial_summary
-                                    (code, report_date, indicator, value, updated_at)
-                                    VALUES (:code, :rd, :ind, :val, :now)
-                                    ON DUPLICATE KEY UPDATE value=VALUES(value)"""),
-                                    {'code': code, 'rd': rd, 'ind': idx[1], 'val': numeric, 'now': now})
-                                count += 1
-                            except:
-                                pass
+                conn.execute(
+                    text("""INSERT INTO financial_summary
+                        (code, report_date, indicator, value, updated_at)
+                        VALUES (:code, :rd, :ind, :val, :now)
+                        ON DUPLICATE KEY UPDATE value=VALUES(value)"""),
+                    rows
+                )
                 conn.commit()
-            return code, count, None
+            return code, len(rows), None
         except Exception as e:
             return code, 0, str(e)
 
@@ -901,6 +1131,18 @@ if __name__ == "__main__":
         print(f"✅ 板块数据采集完成！用时 {elapsed:.1f}s")
         print(f"   行业: {stats['industry']}  概念: {stats['concept']}")
         print(f"   清理: {stats['cleaned']} 条  缺天数: {stats.get('missing_days', 0)}")
+        print(f"{'='*40}")
+        sys.exit(0)
+
+    elif mode == "--refresh-list":
+        start = time.time()
+        print("🚀 开始刷新全量股票清单（清除旧数据后重新入库）")
+        print("=" * 40)
+        stats = refresh_stock_list(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 股票清单刷新完成！用时 {elapsed:.1f}s")
+        print(f"   A股: {stats['a']} 只  港股: {stats['hk']} 只  总计: {stats['total']} 只")
         print(f"{'='*40}")
         sys.exit(0)
 

@@ -46,6 +46,10 @@ def _run_task(name: str, cli_mode: str):
             from collector import collect_a_finance
             stats = collect_a_finance(verbose=False)
             msg = f"A股全量财务: {stats['a_ok']}/{stats['a_total']} 只, 共 {stats['a_finance']} 条"
+        elif cli_mode == "--refresh-list":
+            from collector import refresh_stock_list
+            stats = refresh_stock_list(verbose=False)
+            msg = f"股票清单刷新: A{stats['a']} + HK{stats['hk']} = {stats['total']} 只"
         else:
             msg = f"未知模式: {cli_mode}"
 
@@ -128,6 +132,16 @@ def init_scheduler():
         id="stockdata_a_finance",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+
+    # 股票清单刷新 - 每天 05:30（A+H，仅保留真实港股）
+    scheduler.add_job(
+        _run_task,
+        CronTrigger(hour=5, minute=30),
+        args=["股票清单刷新", "--refresh-list"],
+        id="stockdata_refresh_list",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     scheduler.start()
