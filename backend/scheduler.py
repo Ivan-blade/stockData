@@ -72,10 +72,10 @@ def init_scheduler():
     """注册定时任务（每天非交易日跳过）"""
     logger.info("🕐 初始化内置定时调度...")
 
-    # 估值快照 - 交易日 03:00
+    # 估值快照 - 每天 17:00（A+H 收盘后）
     scheduler.add_job(
         _run_task,
-        CronTrigger(day_of_week="mon-fri", hour=3, minute=0),
+        CronTrigger(hour=17, minute=0),
         args=["估值快照", "--snapshot"],
         id="stockdata_snapshot",
         replace_existing=True,
