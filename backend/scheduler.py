@@ -46,6 +46,14 @@ def _run_task(name: str, cli_mode: str):
             from collector import collect_a_finance
             stats = collect_a_finance(verbose=False)
             msg = f"A股全量财务: {stats['a_ok']}/{stats['a_total']} 只, 共 {stats['a_finance']} 条"
+        elif cli_mode == "--us-snapshot":
+            from collector import collect_us_snapshots
+            total = collect_us_snapshots(verbose=False)
+            msg = f"美股快照: {total} 条"
+        elif cli_mode == "--us-finance":
+            from collector import collect_us_finance
+            total = collect_us_finance(verbose=False)
+            msg = f"美股财务: {total} 条"
         elif cli_mode == "--refresh-list":
             from collector import refresh_stock_list
             stats = refresh_stock_list(verbose=False)
@@ -134,7 +142,7 @@ def init_scheduler():
         misfire_grace_time=3600,
     )
 
-    # 股票清单刷新 - 每天 05:30（A+H，仅保留真实港股）
+    # 股票清单刷新 - 每天 05:30（A+H+US，仅保留真实港股）
     scheduler.add_job(
         _run_task,
         CronTrigger(hour=5, minute=30),
@@ -142,6 +150,26 @@ def init_scheduler():
         id="stockdata_refresh_list",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    # 美股快照 - 每天 07:00（美股收盘后）
+    scheduler.add_job(
+        _run_task,
+        CronTrigger(hour=7, minute=0),
+        args=["美股快照", "--us-snapshot"],
+        id="stockdata_us_snapshot",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+
+    # 美股财务 - 每月4日06:00
+    scheduler.add_job(
+        _run_task,
+        CronTrigger(day=4, hour=6, minute=0),
+        args=["美股财务", "--us-finance"],
+        id="stockdata_us_finance",
+        replace_existing=True,
+        misfire_grace_time=1800,
     )
 
     scheduler.start()

@@ -46,6 +46,9 @@ FINANCIAL_TARGETS = [
 # A股代码 → 交易所前缀
 EX_PREFIX = {"SZ": "sz", "SH": "sh", "BJ": "bj"}
 
+# 美股代码缓存（get_us_stock_codes 填充，供后续快照/财务使用）
+GET_US_STOCK_CODES = set()
+
 # 港股黑名单前缀（债券/票据，无需请求即可跳过）
 # 05xx=公司债/票据/结构化—99% 无财务摘要数据
 # 02xx=窝轮牛熊—但 020xx 含大量正常股票（如 02020 安踏），去掉
@@ -200,7 +203,28 @@ def refresh_stock_list(verbose=True):
         if verbose:
             print(f"    ❌ {e}")
 
-    return {"a": total_a, "hk": total_hk, "total": total_a + total_hk}
+    # 美股
+    total_us = 0
+    if verbose:
+        print("  📋 拉取美股清单...", flush=True)
+    try:
+        us_stocks = get_us_stock_codes(verbose=verbose)
+        if us_stocks:
+            with engine.connect() as conn:
+                for s in us_stocks:
+                    conn.execute(text("""INSERT INTO stock_list (code, name, exchange, stock_type, updated_at)
+                        VALUES (:code, :name, 'US', 'AHK', :now)
+                        ON DUPLICATE KEY UPDATE name=VALUES(name), updated_at=VALUES(updated_at)"""),
+                        {"code": s["code"], "name": s["name"], "now": now})
+                conn.commit()
+            total_us = len(us_stocks)
+            if verbose:
+                print(f"    ✅ {total_us} 只美股")
+    except Exception as e:
+        if verbose:
+            print(f"    ❌ 美股: {e}")
+
+    return {"a": total_a, "hk": total_hk, "us": total_us, "total": total_a + total_hk + total_us}
 
 
 def upsert_company(db, code, exchange, name):
@@ -665,6 +689,39 @@ def _is_likely_stock(name, name_u):
     return True
 
 
+def get_us_stock_codes(verbose=False):
+    """获取全量美股代码列表
+
+    调用 ak.stock_us_spot() 获取全部美股行情。
+    注意：该 API 内部用 multiprocessing，macOS 上容易 SIGTERM。
+    如果失败，打印错误信息并返回空列表。
+
+    Returns:
+        list[dict]: [{"code": "AAPL", "name": "Apple Inc."}, ...]
+    """
+    import time as _time
+    try:
+        df = ak.stock_us_spot()
+        if df is None or df.empty:
+            if verbose:
+                print("    ⚠️ 美股行情列表为空")
+            return []
+        result = []
+        for _, row in df.iterrows():
+            code = str(row.get("代码", "")).upper()
+            name = str(row.get("名称", ""))
+            if code:
+                result.append({"code": code, "name": name})
+        if verbose:
+            print(f"    → 美股 {len(result)} 只", flush=True)
+        GET_US_STOCK_CODES.update(s["code"] for s in result)
+        return result
+    except Exception as e:
+        if verbose:
+            print(f"    ❌ get_us_stock_codes: {e}", flush=True)
+        return []
+
+
 def collect_hk_finance(verbose=True):
     """采集港股财务数据（全量活跃股）
 
@@ -1084,6 +1141,236 @@ def collect_a_finance(verbose=True):
     return {'a_finance': total, 'a_ok': ok, 'a_total': len(codes), 'a_errors': errors}
 
 
+def collect_us_finance(verbose=True):
+    """采集美股财务分析指标
+
+    使用 stock_financial_us_analysis_indicator_em() 获取美股财务分析指标，
+    写入 financial_summary 表（exchange='US'）。
+    解析方法参照 collect_hk_finance()。
+
+    Returns:
+        int: 写入的财务摘要条数
+    """
+    import time as _time
+    from datetime import datetime
+    now = datetime.now()
+    total_count = 0
+
+    if verbose:
+        print("  📊 美股财务数据采集...", flush=True)
+
+    # 读取 stock_list 中 US 的代码
+    try:
+        with engine.connect() as conn:
+            us_codes = [r[0] for r in conn.execute(
+                text("SELECT code FROM stock_list WHERE exchange = 'US'")
+            ).fetchall()]
+    except Exception as e:
+        if verbose:
+            print(f"    ❌ 读取 stock_list 失败: {e}", flush=True)
+        return 0
+
+    if not us_codes:
+        if verbose:
+            print("    （无美股清单，跳过）", flush=True)
+        return 0
+
+    if verbose:
+        print(f"    → 共 {len(us_codes)} 只美股", flush=True)
+
+    conn = engine.connect()
+    try:
+        for code in us_codes:
+            try:
+                df = ak.stock_financial_us_analysis_indicator_em(symbol=code)
+                if df is None or df.empty:
+                    if verbose:
+                        print(f"    ⚠️ {code}: 无数据", flush=True)
+                    continue
+                # 参照 collect_hk_finance 的解析逻辑：
+                # 用列名定位 REPORT_DATE，跳过非指标列
+                skip_cols = {'SECUCODE', 'SECURITY_CODE', 'SECURITY_NAME_ABBR',
+                             'ORG_CODE', 'DATE_TYPE_CODE', 'START_DATE',
+                             'FISCAL_YEAR', 'CURRENCY', 'IS_CNY_CODE',
+                             'STD_CODE', 'STD_NAME'}
+                indicator_cols = [c for c in df.columns
+                                  if c not in skip_cols and c != 'REPORT_DATE']
+                row_count = 0
+                for _, row in df.iterrows():
+                    report_date_raw = row.get('REPORT_DATE')
+                    if pd.isna(report_date_raw):
+                        continue
+                    rd_str = str(report_date_raw)[:10]
+                    try:
+                        rd = datetime.strptime(rd_str, "%Y-%m-%d").date()
+                    except (ValueError, TypeError):
+                        continue
+                    for indicator in indicator_cols:
+                        val = row.get(indicator)
+                        if val is not None:
+                            try:
+                                numeric = float(val)
+                                import math
+                                if math.isnan(numeric) or math.isinf(numeric):
+                                    continue
+                                conn.execute(text("""INSERT INTO financial_summary
+                                    (code, report_date, indicator, value, updated_at)
+                                    VALUES (:code, :rd, :ind, :val, :now)
+                                    ON DUPLICATE KEY UPDATE value=VALUES(value), updated_at=VALUES(updated_at)"""),
+                                    {"code": code, "rd": rd,
+                                     "ind": str(indicator), "val": numeric, "now": now})
+                                total_count += 1
+                                row_count += 1
+                            except (ValueError, TypeError):
+                                continue
+                conn.commit()
+                if verbose:
+                    print(f"    ✅ {code}: {row_count} 条", flush=True)
+            except Exception as e:
+                if verbose:
+                    print(f"    ⚠️ {code}: {e}", flush=True)
+
+            _time.sleep(0.5)
+    finally:
+        conn.close()
+
+    if verbose:
+        print(f"    ✅ 美股财务采集完成：共 {total_count} 条财务摘要", flush=True)
+    return total_count
+
+
+def collect_us_snapshots(verbose=True):
+    """采集美股实时快照
+
+    使用新浪财经单只美股行情API获取价格：
+        https://hq.sinajs.cn/list=gb_{code.lower()}
+    提取 close, pe_ttm, pb, market_cap, change_pct, volume 写入 daily_snapshot。
+
+    Returns:
+        int: 写入的快照条数
+    """
+    import time as _time
+    import requests
+    from datetime import datetime
+    now = datetime.now()
+    today = now.date()
+    total_count = 0
+
+    if verbose:
+        print("  📸 拉取美股快照（逐只，间隔 0.3s）...", flush=True)
+
+    # 读取 stock_list 中 US 的代码
+    try:
+        with engine.connect() as conn:
+            us_codes = [r[0] for r in conn.execute(
+                text("SELECT code FROM stock_list WHERE exchange = 'US'")
+            ).fetchall()]
+    except Exception as e:
+        if verbose:
+            print(f"    ❌ 读取 stock_list 失败: {e}", flush=True)
+        return 0
+
+    if not us_codes:
+        if verbose:
+            print("    （无美股清单，跳过）", flush=True)
+        return 0
+
+    if verbose:
+        print(f"    → 共 {len(us_codes)} 只美股", flush=True)
+
+    conn = engine.connect()
+    try:
+        for code in us_codes:
+            try:
+                url = f"https://hq.sinajs.cn/list=gb_{code.lower()}"
+                resp = requests.get(
+                    url,
+                    headers={"Referer": "https://finance.sina.com.cn"},
+                    timeout=10,
+                )
+                resp.encoding = "gbk"
+                txt = resp.text.strip()
+
+                # 解析格式: var hq_str_gb_aapl="苹果,286.5750,0.98,2026-06-29 21:33:39,2.7950,..."
+                # 字段顺序:
+                # 0: name
+                # 1: price (close)
+                # 2: change_pct (%)
+                # 3: time
+                # 4: change_amt
+                # 5: open
+                # 6: high
+                # 7: low
+                # 8: prev_close
+                # 9: high_52w
+                # 10: low_52w
+                # 11: volume
+                # 12: amount
+                # 13: market_cap
+                # 14: pe
+                # 15: pb
+                if '=' not in txt:
+                    if verbose:
+                        print(f"    ⚠️ {code}: 解析失败（无等号）", flush=True)
+                    continue
+
+                data_part = txt.split('=', 1)[1].strip().strip('"')
+                fields = data_part.split(',')
+                if len(fields) < 16:
+                    if verbose:
+                        print(f"    ⚠️ {code}: 字段不足 ({len(fields)})", flush=True)
+                    continue
+
+                close = _sf(fields[1])
+                if close <= 0:
+                    if verbose:
+                        print(f"    ⚠️ {code}: 收盘价 {close}，跳过", flush=True)
+                    continue
+
+                change_pct = _sf(fields[2])
+                volume = _si(fields[11])
+                market_cap = _sf(fields[13])
+                pe_ttm = _sf(fields[14])
+                pb = _sf(fields[15])
+                name = fields[0]
+
+                conn.execute(text("""INSERT INTO daily_snapshot 
+                    (code, trade_date, close, volume, pe_ttm, pb, market_cap, change_pct, updated_at)
+                    VALUES (:c, :td, :cl, :vol, :pe, :pb, :mcap, :chg, :now)
+                    ON DUPLICATE KEY UPDATE close=VALUES(close), volume=VALUES(volume),
+                        pe_ttm=VALUES(pe_ttm), pb=VALUES(pb),
+                        market_cap=VALUES(market_cap), change_pct=VALUES(change_pct),
+                        updated_at=VALUES(updated_at)"""),
+                    {"c": code, "td": today, "cl": close,
+                     "vol": volume,
+                     "pe": pe_ttm, "pb": pb, "mcap": market_cap,
+                     "chg": change_pct, "now": now})
+                conn.commit()
+                total_count += 1
+
+                # 同步更新 stock_list 名称
+                if name:
+                    conn.execute(text(
+                        "UPDATE stock_list SET name = :name, updated_at = :now WHERE code = :code AND name != :name"
+                    ), {"name": name, "now": now, "code": code})
+                    conn.commit()
+
+                if verbose:
+                    print(f"    ✅ {code} ({name}): ${close} PE={pe_ttm} PB={pb}", flush=True)
+
+            except Exception as e:
+                if verbose:
+                    print(f"    ⚠️ {code}: {e}", flush=True)
+
+            _time.sleep(0.3)
+    finally:
+        conn.close()
+
+    if verbose:
+        print(f"    ✅ 美股快照采集完成：共 {total_count} 条", flush=True)
+    return total_count
+
+
 def print_stats(stats, elapsed):
     """打印采集结果"""
     print(f"\n{'='*40}")
@@ -1179,6 +1466,30 @@ if __name__ == "__main__":
         print(f"\n{'='*40}")
         print(f"✅ A股财务采集完成！用时 {elapsed:.1f}s")
         print(f"   覆盖: {stats['a_ok']}/{stats['a_total']} 只, 失败 {stats.get('a_errors', 0)}, 共 {stats['a_finance']} 条")
+        print(f"{'='*40}")
+        sys.exit(0)
+
+    elif mode == "--us-finance":
+        start = time.time()
+        print("🚀 开始采集美股全量财务数据")
+        print("=" * 40)
+        total = collect_us_finance(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 美股财务采集完成！用时 {elapsed:.1f}s")
+        print(f"   财务摘要: {total} 条")
+        print(f"{'='*40}")
+        sys.exit(0)
+
+    elif mode == "--us-snapshot":
+        start = time.time()
+        print("🚀 开始采集美股实时快照")
+        print("=" * 40)
+        total = collect_us_snapshots(verbose=True)
+        elapsed = time.time() - start
+        print(f"\n{'='*40}")
+        print(f"✅ 美股快照采集完成！用时 {elapsed:.1f}s")
+        print(f"   快照: {total} 条")
         print(f"{'='*40}")
         sys.exit(0)
 
